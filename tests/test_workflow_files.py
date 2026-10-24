@@ -16,7 +16,8 @@ ACTIONS = sorted((ROOT / ".github" / "actions").glob("*/action.yml"))
 TEMPLATES = sorted((ROOT / "templates").glob("*.yml"))
 ALL_YAML = WORKFLOWS + ACTIONS + TEMPLATES
 
-EXPECTED_ACTIONS = {"free-disk", "manifest", "resolve-version", "next-tag", "build-arch", "test-arch", "publish-manifest", "emit-bundle", "release", "notify-control"}
+EXPECTED_ACTIONS = {"free-disk", "manifest", "resolve-version", "next-tag", "build-arch", "test-arch", "publish-manifest", "emit-bundle", "release", "notify-control", "package-check"}
+CLOSED_PR = "github.event_name == 'pull_request' && github.event.action == 'closed'"
 ALLOWED_REGISTRIES = re.compile(r"ghcr\.io/(linuxserver-playground/|linuxserver/baseimage-)")
 FORBIDDEN = re.compile(r"docker\.io|hub\.docker\.com|registry\.gitlab\.com|quay\.io|s3://|scarf|discord", re.IGNORECASE)
 
@@ -46,17 +47,77 @@ def test_image_build_contract():
     assert inputs["reason"]["default"] == "push"
     assert inputs["workflows_ref"]["default"] == "v1"
     assert inputs["ci_image"]["default"] == "ghcr.io/linuxserver-playground/ci:latest"
-    assert set(wf[True]["workflow_call"]["secrets"]) == {"CONTROL_URL", "CONTROL_EVENTS_SECRET"}
-    assert list(wf["jobs"]) == ["prepare", "arch", "publish"]
+    assert set(wf[True]["workflow_call"]["secrets"]) == {"CONTROL_URL", "CONTROL_EVENTS_SECRET", "PACKAGES_TOKEN"}
+    assert all(not v.get("required") for v in wf[True]["workflow_call"]["secrets"].values())
+    assert list(wf["jobs"]) == ["prepare", "arch", "publish", "cleanup"]
     arch = wf["jobs"]["arch"]
     assert arch["strategy"]["fail-fast"] is False
     assert arch["runs-on"] == "${{ matrix.runner }}"
     publish = wf["jobs"]["publish"]
-    assert publish["if"] == "always()"
+    assert publish["if"] == "${{ always() && !(" + CLOSED_PR + ") }}"
     assert publish["permissions"] == {"contents": "write", "packages": "write", "pull-requests": "write", "id-token": "write", "attestations": "write"}
     used = {s.get("uses", "") for job in wf["jobs"].values() for s in job["steps"]}
     for a in EXPECTED_ACTIONS:
         assert any(u.endswith(f"/.github/actions/{a}") for u in used), a
+
+
+def _steps(wf: dict, job: str) -> dict:
+    return {s.get("id") or s["name"]: s for s in wf["jobs"][job]["steps"]}
+
+
+def test_arch_jobs_push_to_staging_and_publish_creates_from_it():
+    wf = load(ROOT / ".github" / "workflows" / "image-build.yml")
+    prepare = wf["jobs"]["prepare"]
+    assert prepare["outputs"]["staging_refs"] == "${{ steps.tags.outputs.staging_refs }}"
+    assert "--run-id" in _steps(wf, "prepare")["tags"]["run"]
+    build = _steps(wf, "arch")["build"]
+    assert build["with"]["staging_ref"] == "${{ fromJSON(needs.prepare.outputs.staging_refs)[matrix.arch] }}"
+    publish = _steps(wf, "publish")
+    assert publish["manifest"]["with"]["sources"] == "${{ needs.prepare.outputs.staging_refs }}"
+    # Nothing consumer-visible is written before the result is known or during a package check.
+    for step in ("manifest", "Attest provenance (live)", "release"):
+        cond = publish[step]["if"]
+        assert "steps.result.outputs.result == 'success'" in cond and "env.PACKAGE_CHECK != 'true'" in cond, step
+
+
+def test_package_check_is_a_check_not_a_release():
+    wf = load(ROOT / ".github" / "workflows" / "image-build.yml")
+    assert wf["jobs"]["prepare"]["outputs"]["package_check"] == "${{ inputs.reason == 'packages' && steps.manifest.outputs.mode == 'live' && steps.manifest.outputs.push_images == 'true' }}"
+    publish = _steps(wf, "publish")
+    assert publish["packages"]["if"] == "steps.result.outputs.result == 'success' && env.PACKAGE_CHECK == 'true'"
+    assert publish["packages"]["with"]["sha"] == "${{ needs.prepare.outputs.checkout_sha }}"
+    assert publish["repo"]["with"]["persist-credentials"] is True
+    # The control plane and the summary see the folded outcome; an unchanged check reports skipped.
+    assert 'result="skipped"' in publish["outcome"]["run"]
+    notify = publish["Notify control plane"]["with"]
+    assert notify["result"] == "${{ steps.outcome.outputs.result }}"
+    assert "steps.outcome.outputs.result != 'skipped'" in publish["Fail if any job failed"]["if"]
+
+
+def test_closed_pull_request_runs_only_cleanup():
+    wf = load(ROOT / ".github" / "workflows" / "image-build.yml")
+    for job in ("prepare", "arch"):
+        assert wf["jobs"][job]["if"] == "${{ !(" + CLOSED_PR + ") }}"
+    cleanup = wf["jobs"]["cleanup"]
+    assert cleanup["if"] == CLOSED_PR
+    assert cleanup["permissions"]["packages"] == "write"
+    run = _steps(wf, "cleanup")["Delete package versions"]["run"]
+    assert "pr_cleanup.py" in run and "PACKAGES_TOKEN" in run and 'untrusted-pr/' in run
+    assert not (ROOT / ".github" / "workflows" / "pr-cleanup.yml").exists()
+    tpl = load(ROOT / "templates" / "build.yml")
+    assert tpl[True]["pull_request"] == {"types": ["opened", "synchronize", "reopened", "closed"]}
+
+
+def test_cleanup_staging_workflow():
+    wf = load(ROOT / ".github" / "workflows" / "cleanup-staging.yml")
+    assert set(wf[True]) == {"workflow_dispatch", "schedule"}
+    assert wf[True]["workflow_dispatch"]["inputs"]["max_age_days"]["default"] == "7"
+    job = wf["jobs"]["cleanup"]
+    assert job["env"]["PACKAGES_TOKEN"] == "${{ secrets.PACKAGES_TOKEN }}"
+    steps = {s["name"]: s for s in job["steps"]}
+    assert steps["No token"]["if"] == "env.PACKAGES_TOKEN == ''" and "::warning::" in steps["No token"]["run"]
+    assert steps["Delete staging versions"]["if"] == "env.PACKAGES_TOKEN != ''"
+    assert "cleanup_staging.py" in steps["Delete staging versions"]["run"]
 
 
 def test_third_party_actions_pinned_by_major_and_listed_in_readme():

@@ -13,11 +13,11 @@ bundle attached to each Release). The contract is `CONVENTIONS.md` in `linuxserv
 
 | Path | What |
 | --- | --- |
-| `.github/workflows/image-build.yml` | The reusable image build: jobs `prepare`, `arch` (matrix), `publish`. |
+| `.github/workflows/image-build.yml` | The reusable image build: jobs `prepare`, `arch` (matrix), `publish`, and `cleanup` (closed pull requests only). |
 | `.github/workflows/mod-build.yml` | Reusable mod build for `docker-mods` branches. |
-| `.github/workflows/pr-cleanup.yml` | Deletes `untrusted-pr` images when a pull request closes. |
+| `.github/workflows/cleanup-staging.yml` | Scheduled deletion of old `build/*` staging images (needs `PACKAGES_TOKEN`). |
 | `.github/workflows/ci.yml` | This repo's own checks. |
-| `.github/actions/<name>/` | One composite action per step; logic in the script next to `action.yml`. |
+| `.github/actions/<name>/` | One composite action per step; logic in the script next to `action.yml`. `build-arch` pushes to `build/` staging refs, `publish-manifest` creates the released tags from them, `package-check` is the `reason: packages` comparison and commit. |
 | `scripts/` | `lib.sh` bash helpers; Python modules shared by actions and tests. |
 | `templates/build.yml` | The caller file the builder renders into image repos. |
 | `fixtures/example-image/` | Minimal valid image repo for integration runs. |
@@ -31,7 +31,10 @@ only (PyYAML is installed in the step when needed, the contracts package comes f
 `scripts/resolve_version.py` must stay importable without GitHub Actions context because the control plane
 uses it. Third-party actions are pinned by major tag and listed in README.md (a test enforces both). Nothing
 may reference a registry or namespace outside `linuxserver-playground` other than
-`ghcr.io/linuxserver/baseimage-*`.
+`ghcr.io/linuxserver/baseimage-*`. Released tags are only ever written by `publish-manifest`, after every
+arch job succeeded; anything that runs earlier pushes to the `build/` staging namespace. The two bot commits
+are `Update generated files [skip ci]` and `Update package versions` (no `[skip ci]`: its push is the release
+build); do not add a third.
 
 Behaviour changes that touch the ci container interface, the bundle or the control event are contract
 changes: coordinate with the `ci`, `hub` and `control` repos and the schemas in `builder`.

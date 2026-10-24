@@ -3,6 +3,12 @@ name: Image build
 # The shared build for every docker-<name> repository in linuxserver-playground. Image repos call
 # this from their generated .github/workflows/build.yml (templates/build.yml). See README.md for the
 # job graph and CONVENTIONS.md in linuxserver-playground/builder for the contract it implements.
+#
+# Arch jobs push to staging references (ghcr.io/<owner>/build/<name>:<arch>-<sha7>-<run id>) and the
+# publish job creates the released tags from them, so a failing run never overwrites a released tag.
+# reason=packages on a live branch is a check, not a release: it compares the fresh package table with
+# the committed package_versions.txt and commits the new one when it changed; that push starts the
+# release build. A closed pull request runs only the cleanup job, which deletes its untrusted-pr images.
 
 on:
   workflow_call:
@@ -32,6 +38,9 @@ on:
         required: false
       CONTROL_EVENTS_SECRET:
         required: false
+      PACKAGES_TOKEN:
+        description: Token with delete:packages on the organisation, used when GITHUB_TOKEN may not delete the untrusted-pr versions of a closed pull request
+        required: false
 
 env:
   WORKFLOWS_REPOSITORY: linuxserver-playground/workflows
@@ -40,6 +49,7 @@ env:
 jobs:
   prepare:
     name: Prepare
+    if: ${{ !(github.event_name == 'pull_request' && github.event.action == 'closed') }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -85,6 +95,10 @@ jobs:
       arch_primary: ${{ steps.tags.outputs.arch_primary }}
       version_label: ${{ steps.tags.outputs.version_label }}
       build_date: ${{ steps.tags.outputs.build_date }}
+      staging_path: ${{ steps.tags.outputs.staging_path }}
+      staging_refs: ${{ steps.tags.outputs.staging_refs }}
+      # reason=packages on a live branch with pushes enabled: build and test, compare, never release.
+      package_check: ${{ inputs.reason == 'packages' && steps.manifest.outputs.mode == 'live' && steps.manifest.outputs.push_images == 'true' }}
     steps:
       - name: Check out repository
         uses: actions/checkout@v5
@@ -162,7 +176,8 @@ jobs:
           result=$(python3 "${WORKFLOWS_PATH}/scripts/tags.py" \
             --mode "${MODE}" --release-tag "${RELEASE_TAG}" --upstream-clean "${UPSTREAM_CLEAN}" \
             --semver "${SEMVER}" --ls-build "${LS_BUILD:-0}" --branch "${BRANCH}" --sha "${SHA}" \
-            --pr-number "${PR_NUMBER}" --platforms "${PLATFORMS}")
+            --pr-number "${PR_NUMBER}" --platforms "${PLATFORMS}" \
+            --repository "${GITHUB_REPOSITORY}" --name "${NAME}" --run-id "${GITHUB_RUN_ID}")
           echo "${result}"
           {
             echo "primary_tag=$(jq -r .primary_tag <<< "${result}")"
@@ -170,10 +185,13 @@ jobs:
             echo "all_tags=$(jq -c .all_tags <<< "${result}")"
             echo "arch_primary=$(jq -c .arch_primary <<< "${result}")"
             echo "version_label=$(jq -r .version_label <<< "${result}")"
+            echo "staging_path=$(jq -r .staging_path <<< "${result}")"
+            echo "staging_refs=$(jq -c .staging_refs <<< "${result}")"
             echo "sha7=${SHA:0:7}"
             echo "build_date=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
           } >> "${GITHUB_OUTPUT}"
         env:
+          NAME: ${{ steps.manifest.outputs.name }}
           MODE: ${{ steps.manifest.outputs.mode }}
           RELEASE_TAG: ${{ steps.manifest.outputs.release_tag }}
           UPSTREAM_CLEAN: ${{ steps.version.outputs.upstream_clean }}
@@ -201,6 +219,9 @@ jobs:
             echo "| upstream | \`${UPSTREAM}\` |"
             echo "| commit | \`${SHA}\` |"
             echo "| push images | \`${PUSH}\` |"
+            echo "| staging | \`${STAGING}\` |"
+            [[ "${PACKAGE_CHECK}" == "true" ]] && echo "| package check | yes: compare and commit, no publish or release |"
+            true
           } >> "${GITHUB_STEP_SUMMARY}"
         env:
           IMAGE_PATH: ${{ steps.manifest.outputs.image_path }}
@@ -211,10 +232,13 @@ jobs:
           UPSTREAM: ${{ steps.version.outputs.upstream }}
           SHA: ${{ steps.generated.outputs.checkout_sha }}
           PUSH: ${{ steps.manifest.outputs.push_images }}
+          STAGING: ${{ steps.tags.outputs.staging_refs }}
+          PACKAGE_CHECK: ${{ inputs.reason == 'packages' && steps.manifest.outputs.mode == 'live' && steps.manifest.outputs.push_images == 'true' }}
 
   arch:
     name: Build ${{ matrix.arch }}
     needs: prepare
+    if: ${{ !(github.event_name == 'pull_request' && github.event.action == 'closed') }}
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -267,6 +291,7 @@ jobs:
           dockerfile: ${{ matrix.dockerfile }}
           image_path: ${{ needs.prepare.outputs.image_path }}
           arch_tag: ${{ fromJSON(needs.prepare.outputs.arch_primary)[matrix.arch] }}
+          staging_ref: ${{ fromJSON(needs.prepare.outputs.staging_refs)[matrix.arch] }}
           push: ${{ needs.prepare.outputs.push_images }}
           name: ${{ needs.prepare.outputs.name }}
           title: ${{ needs.prepare.outputs.title }}
@@ -324,7 +349,7 @@ jobs:
   publish:
     name: Publish
     needs: [prepare, arch]
-    if: always()
+    if: ${{ always() && !(github.event_name == 'pull_request' && github.event.action == 'closed') }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -335,6 +360,7 @@ jobs:
     env:
       MODE: ${{ needs.prepare.outputs.mode }}
       PUSH: ${{ needs.prepare.outputs.push_images }}
+      PACKAGE_CHECK: ${{ needs.prepare.outputs.package_check }}
     steps:
       - name: Determine result
         id: result
@@ -393,16 +419,20 @@ jobs:
 
       - name: Publish tags
         id: manifest
-        if: steps.result.outputs.result == 'success' && env.PUSH == 'true'
+        # The released tags come into existence here, from the staging references, and only once every
+        # arch has built and passed its tests. A package check never publishes.
+        if: steps.result.outputs.result == 'success' && env.PUSH == 'true' && env.PACKAGE_CHECK != 'true'
         uses: ./.lsio-workflows/.github/actions/publish-manifest
         with:
           image_path: ${{ needs.prepare.outputs.image_path }}
           primary_tag: ${{ needs.prepare.outputs.primary_tag }}
           tags: ${{ needs.prepare.outputs.tags }}
           platforms: ${{ needs.prepare.outputs.platforms }}
+          sources: ${{ needs.prepare.outputs.staging_refs }}
+          description: ${{ needs.prepare.outputs.description }}
 
       - name: Attest provenance (live)
-        if: steps.result.outputs.result == 'success' && env.PUSH == 'true' && env.MODE == 'live'
+        if: steps.result.outputs.result == 'success' && env.PUSH == 'true' && env.MODE == 'live' && env.PACKAGE_CHECK != 'true'
         uses: actions/attest-build-provenance@v2
         continue-on-error: true
         with:
@@ -430,7 +460,7 @@ jobs:
 
       - name: Release (live)
         id: release
-        if: steps.result.outputs.result == 'success' && env.PUSH == 'true' && env.MODE == 'live'
+        if: steps.result.outputs.result == 'success' && env.PUSH == 'true' && env.MODE == 'live' && env.PACKAGE_CHECK != 'true'
         uses: ./.lsio-workflows/.github/actions/release
         with:
           tag: ${{ needs.prepare.outputs.primary_tag }}
@@ -445,6 +475,56 @@ jobs:
           control_url: ${{ secrets.CONTROL_URL }}
           hub_url: ${{ vars.HUB_URL }}
           image_name: ${{ needs.prepare.outputs.name }}
+
+      # ---- reason=packages (live): compare, commit on change, never publish or release ----
+      - name: Check out repository (package check)
+        id: repo
+        if: steps.result.outputs.result == 'success' && env.PACKAGE_CHECK == 'true'
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.release_branch }}
+          path: repo
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Package check
+        id: packages
+        if: steps.result.outputs.result == 'success' && env.PACKAGE_CHECK == 'true'
+        uses: ./.lsio-workflows/.github/actions/package-check
+        with:
+          out_dir: out
+          repo_dir: repo
+          sha: ${{ needs.prepare.outputs.checkout_sha }}
+          branch: ${{ needs.prepare.outputs.release_branch }}
+          previous_tag: ${{ needs.prepare.outputs.previous_tag }}
+
+      - name: Publish outcome
+        id: outcome
+        if: always()
+        # Fold the publish job's own steps into the result the control plane and the summary see:
+        # a failed publish, release or package commit is a failure of job "publish"; a package check
+        # that found nothing to do is "skipped".
+        run: |
+          set -euo pipefail
+          result="${RESULT}"; failed_job="${FAILED_JOB}"
+          if [[ "${result}" == "success" ]]; then
+            if [[ "${MANIFEST}" == "failure" || "${RELEASE}" == "failure" || "${REPO}" == "failure" || "${PACKAGES}" == "failure" ]]; then
+              result="failure"; failed_job="publish"
+            elif [[ "${PACKAGE_CHECK}" == "true" && "${CHANGED}" != "true" ]]; then
+              result="skipped"
+            fi
+          fi
+          echo "result=${result}" >> "${GITHUB_OUTPUT}"
+          echo "failed_job=${failed_job}" >> "${GITHUB_OUTPUT}"
+          echo "Publish outcome: ${result} ${failed_job:+(failed job: ${failed_job})}"
+        env:
+          RESULT: ${{ steps.result.outputs.result }}
+          FAILED_JOB: ${{ steps.result.outputs.failed_job }}
+          MANIFEST: ${{ steps.manifest.outcome }}
+          RELEASE: ${{ steps.release.outcome }}
+          REPO: ${{ steps.repo.outcome }}
+          PACKAGES: ${{ steps.packages.outcome }}
+          CHANGED: ${{ steps.packages.outputs.changed }}
 
       - name: Upload bundle
         id: artifact
@@ -477,8 +557,8 @@ jobs:
         with:
           control_url: ${{ secrets.CONTROL_URL }}
           control_events_secret: ${{ secrets.CONTROL_EVENTS_SECRET }}
-          result: ${{ steps.result.outputs.result }}
-          failed_job: ${{ steps.result.outputs.failed_job }}
+          result: ${{ steps.outcome.outputs.result }}
+          failed_job: ${{ steps.outcome.outputs.failed_job }}
           bundle_path: ${{ steps.bundle.outputs.bundle }}
           image: ${{ needs.prepare.outputs.name }}
           branch: ${{ needs.prepare.outputs.branch }}
@@ -495,9 +575,17 @@ jobs:
             echo "## Result: ${RESULT}"
             echo
             [[ -n "${FAILED_JOB}" ]] && echo "Failed job: \`${FAILED_JOB}\`"
+            if [[ "${PACKAGE_CHECK}" == "true" ]]; then
+              if [[ "${CHANGED}" == "true" ]]; then
+                echo "Package check: packages changed, release build triggered by commit \`${COMMIT_SHA}\`"
+              else
+                echo "Package check: packages unchanged"
+              fi
+            fi
             [[ -n "${RELEASE_URL}" ]] && echo "Release: ${RELEASE_URL}"
             [[ -n "${INDEX_DIGEST}" ]] && echo "Index digest: \`${INDEX_DIGEST}\`"
             [[ -n "${ARTIFACT_URL}" ]] && echo "Bundle artifact: ${ARTIFACT_URL}"
+            [[ -n "${STAGING}" && "${STAGING}" != "{}" ]] && echo "Staging references (not for use, removed after 7 days): \`${STAGING}\`"
             if [[ -f out/build.json ]]; then
               echo
               echo "<details><summary>build.json</summary>"
@@ -509,17 +597,74 @@ jobs:
             fi
           } >> "${GITHUB_STEP_SUMMARY}"
         env:
-          RESULT: ${{ steps.result.outputs.result }}
-          FAILED_JOB: ${{ steps.result.outputs.failed_job }}
+          RESULT: ${{ steps.outcome.outputs.result }}
+          FAILED_JOB: ${{ steps.outcome.outputs.failed_job }}
           RELEASE_URL: ${{ steps.release.outputs.release_url }}
           INDEX_DIGEST: ${{ steps.manifest.outputs.index_digest }}
           ARTIFACT_URL: ${{ steps.artifact.outputs.artifact-url }}
+          STAGING: ${{ needs.prepare.outputs.staging_refs }}
+          CHANGED: ${{ steps.packages.outputs.changed }}
+          COMMIT_SHA: ${{ steps.packages.outputs.commit_sha }}
 
       - name: Fail if any job failed
-        if: steps.result.outputs.result != 'success'
+        # "skipped" is the successful outcome of a package check that found no change.
+        if: steps.outcome.outputs.result != 'success' && steps.outcome.outputs.result != 'skipped'
         run: |
           echo "::error::build ${RESULT} (${FAILED_JOB})"
           exit 1
         env:
-          RESULT: ${{ steps.result.outputs.result }}
-          FAILED_JOB: ${{ steps.result.outputs.failed_job }}
+          RESULT: ${{ steps.outcome.outputs.result }}
+          FAILED_JOB: ${{ steps.outcome.outputs.failed_job }}
+
+  cleanup:
+    name: Delete PR images
+    # A closed pull request: delete every untrusted-pr/<name> version tagged pr-<number>-* (the index
+    # and the arch twins). GITHUB_TOKEN with packages: write can delete versions of a package linked to
+    # this repository; when the registry refuses, PACKAGES_TOKEN (delete:packages on the organisation)
+    # is tried, and without one the job warns and leaves the images to the control plane.
+    if: github.event_name == 'pull_request' && github.event.action == 'closed'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out repository (base branch)
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: repo
+          persist-credentials: false
+
+      - name: Check out shared workflows
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.WORKFLOWS_REPOSITORY }}
+          ref: ${{ inputs.workflows_ref }}
+          path: ${{ env.WORKFLOWS_PATH }}
+          persist-credentials: false
+
+      - name: Delete package versions
+        run: |
+          set -euo pipefail
+          org="${GITHUB_REPOSITORY%%/*}"
+          repo="${GITHUB_REPOSITORY#*/}"
+          name=$(sed -nE 's/^name:[[:space:]]*"?([A-Za-z0-9._-]+)"?[[:space:]]*(#.*)?$/\1/p' repo/image.yml 2>/dev/null | head -1 || true)
+          package="untrusted-pr/${name:-${repo#docker-}}"
+          echo "Deleting versions of ${package} tagged pr-${PR_NUMBER}-*"
+          rc=0
+          python3 "${WORKFLOWS_PATH}/scripts/pr_cleanup.py" --org "${org}" --package "${package}" --pr "${PR_NUMBER}" || rc=$?
+          if [[ "${rc}" == "2" ]]; then
+            if [[ -n "${PACKAGES_TOKEN}" ]]; then
+              echo "GITHUB_TOKEN could not delete every version; retrying with PACKAGES_TOKEN"
+              GH_TOKEN="${PACKAGES_TOKEN}" python3 "${WORKFLOWS_PATH}/scripts/pr_cleanup.py" --org "${org}" --package "${package}" --pr "${PR_NUMBER}" || rc=$?
+              [[ "${rc}" == "2" ]] && echo "::warning::some ${package} versions of PR #${PR_NUMBER} could not be deleted with PACKAGES_TOKEN either"
+            else
+              echo "::warning::GITHUB_TOKEN could not delete every ${package} version of PR #${PR_NUMBER} and PACKAGES_TOKEN is not set; the control plane must remove them"
+            fi
+          elif [[ "${rc}" != "0" ]]; then
+            exit "${rc}"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGES_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
