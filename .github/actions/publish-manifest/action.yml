@@ -1,0 +1,32 @@
+name: publish-manifest
+description: Create the multi-platform indexes and arch twins for the whole tag set from the pushed per-arch images.
+
+inputs:
+  image_path:
+    required: true
+  primary_tag:
+    description: The unprefixed primary tag, already pushed as <arch>-<primary_tag> per platform
+    required: true
+  tags:
+    description: JSON array of every unprefixed tag to publish (includes the primary tag)
+    required: true
+  platforms:
+    description: JSON array of platforms (amd64, arm64)
+    required: true
+
+outputs:
+  index_digest: { value: "${{ steps.publish.outputs.index_digest }}" }
+  published: { value: "${{ steps.publish.outputs.published }}" }
+
+runs:
+  using: composite
+  steps:
+    - name: Publish tags
+      id: publish
+      shell: bash
+      run: ${GITHUB_ACTION_PATH}/publish.sh
+      env:
+        IMAGE_PATH: ${{ inputs.image_path }}
+        PRIMARY_TAG: ${{ inputs.primary_tag }}
+        TAGS: ${{ inputs.tags }}
+        PLATFORMS: ${{ inputs.platforms }}

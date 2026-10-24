@@ -1,0 +1,49 @@
+name: test-arch
+description: Run the ci container against a locally present image and collect the per-arch bundle files.
+
+inputs:
+  image:
+    description: Image reference present in the local docker daemon
+    required: true
+  arch:
+    required: true
+  mode:
+    required: true
+  manifest_json:
+    description: image.yml as compact JSON
+    required: true
+  previous_packages_url:
+    description: URL of the previous release's package_versions.<arch>.txt (optional)
+    default: ""
+  ci_image:
+    default: ghcr.io/linuxserver-playground/ci:latest
+  out_dir:
+    description: Host directory mounted at /out
+    required: true
+
+outputs:
+  success:
+    description: "true when the test report says success (or tests are disabled in the manifest)"
+    value: ${{ steps.test.outputs.success }}
+  report:
+    description: Path to test.<arch>.json
+    value: ${{ steps.test.outputs.report }}
+  summary:
+    description: Markdown table of the test results
+    value: ${{ steps.test.outputs.summary }}
+
+runs:
+  using: composite
+  steps:
+    - name: Test ${{ inputs.arch }}
+      id: test
+      shell: bash
+      run: ${GITHUB_ACTION_PATH}/test.sh
+      env:
+        IMAGE: ${{ inputs.image }}
+        ARCH: ${{ inputs.arch }}
+        MODE: ${{ inputs.mode }}
+        MANIFEST_JSON: ${{ inputs.manifest_json }}
+        PREVIOUS_PACKAGES_URL: ${{ inputs.previous_packages_url }}
+        CI_IMAGE: ${{ inputs.ci_image }}
+        OUT_DIR: ${{ inputs.out_dir }}

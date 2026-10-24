@@ -1,0 +1,48 @@
+name: next-tag
+description: Determine the LinuxServer build number for the next release of this branch from the repo's GitHub Releases.
+
+inputs:
+  repository:
+    default: ${{ github.repository }}
+  branch:
+    description: The live branch being built
+    required: true
+  release_tag:
+    description: The tag this branch publishes (latest, develop, ...)
+    required: true
+  other_tags:
+    description: Comma separated tags published by the other live branches
+    default: ""
+  github_token:
+    default: ${{ github.token }}
+
+outputs:
+  ls_build: { value: "${{ steps.next.outputs.ls_build }}" }
+  previous_tag: { value: "${{ steps.next.outputs.previous_tag }}" }
+  previous_ls_build: { value: "${{ steps.next.outputs.previous_ls_build }}" }
+  previous_release_url: { value: "${{ steps.next.outputs.previous_release_url }}" }
+  head_already_released: { value: "${{ steps.next.outputs.head_already_released }}" }
+
+runs:
+  using: composite
+  steps:
+    - name: Next build number
+      id: next
+      shell: bash
+      run: |
+        set -euo pipefail
+        # shellcheck source=../../../scripts/lib.sh
+        source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
+        git fetch --tags --quiet origin || warn "could not fetch tags; HEAD tag detection may be incomplete"
+        result=$(python3 "${GITHUB_ACTION_PATH}/../../../scripts/next_tag.py" \
+          --repo "${REPOSITORY}" --branch "${BRANCH}" --release-tag "${RELEASE_TAG}" --other-tags "${OTHER_TAGS}")
+        echo "${result}"
+        for key in ls_build previous_tag previous_ls_build previous_release_url head_already_released; do
+          set_output "${key}" "$(jq -r --arg k "${key}" '.[$k] // ""' <<< "${result}")"
+        done
+      env:
+        REPOSITORY: ${{ inputs.repository }}
+        BRANCH: ${{ inputs.branch }}
+        RELEASE_TAG: ${{ inputs.release_tag }}
+        OTHER_TAGS: ${{ inputs.other_tags }}
+        GH_TOKEN: ${{ inputs.github_token }}

@@ -1,0 +1,97 @@
+name: manifest
+description: Parse and validate image.yml, detect the build mode and emit the build plan as outputs.
+
+inputs:
+  manifest:
+    description: Path to image.yml
+    default: image.yml
+  builder_ref:
+    description: Ref of linuxserver-playground/builder to install the contracts package from
+    default: main
+  event_name:
+    default: ${{ github.event_name }}
+  ref_name:
+    description: Branch being built (the base branch for pull requests)
+    default: ${{ github.event_name == 'pull_request' && github.event.pull_request.base.ref || github.ref_name }}
+  repository:
+    default: ${{ github.repository }}
+  sha:
+    default: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+  pr_number:
+    default: ${{ github.event.pull_request.number }}
+  fork:
+    description: Whether the pull request head is a fork (no secrets, no pushes)
+    default: ${{ github.event.pull_request.head.repo.fork == true }}
+
+outputs:
+  name: { value: "${{ steps.plan.outputs.name }}" }
+  title: { value: "${{ steps.plan.outputs.title }}" }
+  repo_name: { value: "${{ steps.plan.outputs.repo_name }}" }
+  base: { value: "${{ steps.plan.outputs.base }}" }
+  base_image: { value: "${{ steps.plan.outputs.base_image }}" }
+  platforms: { value: "${{ steps.plan.outputs.platforms }}" }
+  matrix: { value: "${{ steps.plan.outputs.matrix }}" }
+  dockerfiles: { value: "${{ steps.plan.outputs.dockerfiles }}" }
+  version_arg: { value: "${{ steps.plan.outputs.version_arg }}" }
+  build_args: { value: "${{ steps.plan.outputs.build_args }}" }
+  first_party: { value: "${{ steps.plan.outputs.first_party }}" }
+  release_tag: { value: "${{ steps.plan.outputs.release_tag }}" }
+  release_branch: { value: "${{ steps.plan.outputs.release_branch }}" }
+  release_channel: { value: "${{ steps.plan.outputs.release_channel }}" }
+  other_tags: { value: "${{ steps.plan.outputs.other_tags }}" }
+  test: { value: "${{ steps.plan.outputs.test }}" }
+  test_enabled: { value: "${{ steps.plan.outputs.test_enabled }}" }
+  mode: { value: "${{ steps.plan.outputs.mode }}" }
+  push_images: { value: "${{ steps.plan.outputs.push_images }}" }
+  image_path: { value: "${{ steps.plan.outputs.image_path }}" }
+  description: { value: "${{ steps.plan.outputs.description }}" }
+  deprecated: { value: "${{ steps.plan.outputs.deprecated }}" }
+  manifest_json: { value: "${{ steps.plan.outputs.manifest_json }}" }
+  manifest_path: { value: "${{ steps.plan.outputs.manifest_path }}" }
+  branch: { value: "${{ steps.plan.outputs.branch }}" }
+  sha: { value: "${{ steps.plan.outputs.sha }}" }
+  sha7: { value: "${{ steps.plan.outputs.sha7 }}" }
+  pr_number: { value: "${{ steps.plan.outputs.pr_number }}" }
+
+runs:
+  using: composite
+  steps:
+    - name: Install contracts
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 -m pip install --quiet --disable-pip-version-check --user \
+          "git+https://github.com/linuxserver-playground/builder@${BUILDER_REF}"
+      env:
+        BUILDER_REF: ${{ inputs.builder_ref }}
+
+    - name: Validate manifest
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 -m contracts image "${MANIFEST}"
+      env:
+        MANIFEST: ${{ inputs.manifest }}
+
+    - name: Plan
+      id: plan
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 "${GITHUB_ACTION_PATH}/manifest.py" \
+          --manifest "${MANIFEST}" \
+          --event-name "${EVENT_NAME}" \
+          --ref-name "${REF_NAME}" \
+          --repository "${REPOSITORY}" \
+          --sha "${SHA}" \
+          --pr-number "${PR_NUMBER}" \
+          --fork "${FORK}" \
+          --work-dir "${RUNNER_TEMP}/lsio"
+      env:
+        MANIFEST: ${{ inputs.manifest }}
+        EVENT_NAME: ${{ inputs.event_name }}
+        REF_NAME: ${{ inputs.ref_name }}
+        REPOSITORY: ${{ inputs.repository }}
+        SHA: ${{ inputs.sha }}
+        PR_NUMBER: ${{ inputs.pr_number }}
+        FORK: ${{ inputs.fork }}

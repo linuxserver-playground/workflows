@@ -1,0 +1,56 @@
+name: notify-control
+description: POST a signed build.summary event to the control plane. Silent no-op when CONTROL_URL is empty.
+
+inputs:
+  control_url:
+    default: ""
+  control_events_secret:
+    default: ""
+  event_type:
+    default: build.summary
+  result:
+    description: success | failure | cancelled | skipped
+    required: true
+  failed_job:
+    default: ""
+  bundle_path:
+    description: build.json path, or empty when the build failed before producing one
+    default: ""
+  image:
+    default: ""
+  branch:
+    default: ""
+  mode:
+    default: ""
+  pr_number:
+    default: ""
+  reason:
+    default: ""
+  release_url:
+    default: ""
+  artifact_url:
+    default: ""
+
+runs:
+  using: composite
+  steps:
+    - name: Notify control plane
+      shell: bash
+      run: python3 "${GITHUB_ACTION_PATH}/notify.py"
+      env:
+        CONTROL_URL: ${{ inputs.control_url }}
+        CONTROL_EVENTS_SECRET: ${{ inputs.control_events_secret }}
+        EVENT_TYPE: ${{ inputs.event_type }}
+        REPOSITORY: ${{ github.repository }}
+        RUN_ID: ${{ github.run_id }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        RESULT: ${{ inputs.result }}
+        FAILED_JOB: ${{ inputs.failed_job }}
+        BUNDLE_PATH: ${{ inputs.bundle_path }}
+        IMAGE: ${{ inputs.image }}
+        BRANCH: ${{ inputs.branch }}
+        MODE: ${{ inputs.mode }}
+        PR_NUMBER: ${{ inputs.pr_number }}
+        REASON: ${{ inputs.reason }}
+        RELEASE_URL: ${{ inputs.release_url }}
+        ARTIFACT_URL: ${{ inputs.artifact_url }}

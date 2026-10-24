@@ -1,0 +1,9 @@
+name: free-disk
+description: Remove the large preinstalled toolchains hosted runners ship with so image builds have room.
+
+runs:
+  using: composite
+  steps:
+    - name: Free disk space
+      shell: bash
+      run: ${GITHUB_ACTION_PATH}/free_disk.sh

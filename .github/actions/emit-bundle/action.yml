@@ -1,0 +1,66 @@
+name: emit-bundle
+description: Assemble build.json from the prepare outputs and the per-arch bundle files, then validate it against bundle.schema.json.
+
+inputs:
+  out_dir:
+    description: Directory holding the merged bundle-<arch> artifacts
+    required: true
+  prepare_outputs:
+    description: toJSON(needs.prepare.outputs)
+    required: true
+  reason:
+    default: push
+  workflows_ref:
+    default: v1
+  ci_image:
+    default: ghcr.io/linuxserver-playground/ci:latest
+  index_digest:
+    default: ""
+  control_url:
+    default: ""
+  builder_ref:
+    default: main
+
+outputs:
+  bundle: { value: "${{ steps.emit.outputs.bundle }}" }
+  test_success: { value: "${{ steps.emit.outputs.test_success }}" }
+  primary_tag: { value: "${{ steps.emit.outputs.primary_tag }}" }
+
+runs:
+  using: composite
+  steps:
+    - name: Install contracts
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 -m pip install --quiet --disable-pip-version-check --user \
+          "git+https://github.com/linuxserver-playground/builder@${BUILDER_REF}"
+      env:
+        BUILDER_REF: ${{ inputs.builder_ref }}
+
+    - name: Emit build.json
+      id: emit
+      shell: bash
+      run: |
+        set -euo pipefail
+        printf '%s' "${PREPARE_OUTPUTS}" > "${RUNNER_TEMP}/prepare.json"
+        python3 "${GITHUB_ACTION_PATH}/emit_bundle.py" \
+          --out "${OUT_DIR}" \
+          --prepare "${RUNNER_TEMP}/prepare.json" \
+          --repository "${GITHUB_REPOSITORY}" \
+          --run-id "${GITHUB_RUN_ID}" \
+          --run-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+          --workflows-ref "${WORKFLOWS_REF}" \
+          --ci-image "${CI_IMAGE}" \
+          --reason "${REASON}" \
+          --index-digest "${INDEX_DIGEST}" \
+          --control-url "${CONTROL_URL}"
+        python3 -m contracts bundle "${OUT_DIR}/build.json"
+      env:
+        OUT_DIR: ${{ inputs.out_dir }}
+        PREPARE_OUTPUTS: ${{ inputs.prepare_outputs }}
+        REASON: ${{ inputs.reason }}
+        WORKFLOWS_REF: ${{ inputs.workflows_ref }}
+        CI_IMAGE: ${{ inputs.ci_image }}
+        INDEX_DIGEST: ${{ inputs.index_digest }}
+        CONTROL_URL: ${{ inputs.control_url }}

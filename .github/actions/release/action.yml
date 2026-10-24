@@ -1,0 +1,58 @@
+name: release
+description: Tag the commit, create the GitHub Release with the three-section notes and attach the bundle assets.
+
+inputs:
+  tag:
+    description: "[T-]<upstream>-ls<N>"
+    required: true
+  sha:
+    required: true
+  branch:
+    required: true
+  prerelease:
+    default: "false"
+  previous_tag:
+    default: ""
+  head_already_released:
+    default: "false"
+  bundle_dir:
+    required: true
+  manifest:
+    description: image.yml or image.json, for upstream.notes
+    required: true
+  upstream:
+    description: Upstream version (before sanitising) used to look up the upstream notes
+    required: true
+  control_url:
+    default: ""
+  repository:
+    default: ${{ github.repository }}
+  github_token:
+    default: ${{ github.token }}
+
+outputs:
+  release_url: { value: "${{ steps.release.outputs.release_url }}" }
+  created: { value: "${{ steps.release.outputs.created }}" }
+
+runs:
+  using: composite
+  steps:
+    - name: Release ${{ inputs.tag }}
+      id: release
+      shell: bash
+      run: ${GITHUB_ACTION_PATH}/release.sh
+      env:
+        TAG: ${{ inputs.tag }}
+        SHA: ${{ inputs.sha }}
+        BRANCH: ${{ inputs.branch }}
+        PRERELEASE: ${{ inputs.prerelease }}
+        PREVIOUS_TAG: ${{ inputs.previous_tag }}
+        HEAD_ALREADY_RELEASED: ${{ inputs.head_already_released }}
+        BUNDLE_DIR: ${{ inputs.bundle_dir }}
+        MANIFEST: ${{ inputs.manifest }}
+        UPSTREAM: ${{ inputs.upstream }}
+        CONTROL_URL: ${{ inputs.control_url }}
+        REPOSITORY: ${{ inputs.repository }}
+        RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+        GH_TOKEN: ${{ inputs.github_token }}
+        GITHUB_TOKEN: ${{ inputs.github_token }}

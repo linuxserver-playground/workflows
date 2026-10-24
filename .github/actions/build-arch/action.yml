@@ -1,0 +1,91 @@
+name: build-arch
+description: Build one architecture of the image with the LinuxServer label set, push it (or save it) and record its digest.
+
+inputs:
+  arch:
+    description: amd64 or arm64
+    required: true
+  dockerfile:
+    required: true
+  image_path:
+    description: ghcr.io/<org>[/dev|/untrusted-pr]/<name>
+    required: true
+  arch_tag:
+    description: The arch-prefixed primary tag, e.g. amd64-4.0.20.3014-ls1
+    required: true
+  push:
+    description: "true to push to the registry, false to docker save into out_dir"
+    default: "true"
+  name:
+    required: true
+  title:
+    required: true
+  description:
+    required: true
+  version_label:
+    description: org.opencontainers.image.version (<upstream>-ls<N>, or the dev/pr tag)
+    required: true
+  mode:
+    required: true
+  branch:
+    required: true
+  sha:
+    required: true
+  upstream:
+    description: Upstream version before sanitising
+    required: true
+  version_arg:
+    description: Dockerfile ARG that receives the upstream version (may be empty)
+    default: ""
+  build_args:
+    description: JSON object of extra --build-arg values
+    default: "{}"
+  first_party:
+    description: Inject ENV LSIO_FIRST_PARTY=true after FROM
+    default: "true"
+  repository:
+    default: ${{ github.repository }}
+  build_date:
+    description: RFC 3339 build time shared by every arch
+    required: true
+  out_dir:
+    description: Directory receiving arch.<arch>.json, dockerfile.<arch> and (when not pushing) image.<arch>.tar.gz
+    required: true
+
+outputs:
+  digest: { value: "${{ steps.build.outputs.digest }}" }
+  size: { value: "${{ steps.build.outputs.size }}" }
+  uncompressed_size: { value: "${{ steps.build.outputs.uncompressed_size }}" }
+  layers: { value: "${{ steps.build.outputs.layers }}" }
+  image_ref: { value: "${{ steps.build.outputs.image_ref }}" }
+  build_seconds: { value: "${{ steps.build.outputs.build_seconds }}" }
+  base_digest: { value: "${{ steps.build.outputs.base_digest }}" }
+
+runs:
+  using: composite
+  steps:
+    - name: Build ${{ inputs.arch }}
+      id: build
+      shell: bash
+      run: ${GITHUB_ACTION_PATH}/build.sh
+      env:
+        ARCH: ${{ inputs.arch }}
+        DOCKERFILE: ${{ inputs.dockerfile }}
+        IMAGE_PATH: ${{ inputs.image_path }}
+        ARCH_TAG: ${{ inputs.arch_tag }}
+        PUSH: ${{ inputs.push }}
+        NAME: ${{ inputs.name }}
+        TITLE: ${{ inputs.title }}
+        DESCRIPTION: ${{ inputs.description }}
+        VERSION_LABEL: ${{ inputs.version_label }}
+        MODE: ${{ inputs.mode }}
+        BRANCH: ${{ inputs.branch }}
+        SHA: ${{ inputs.sha }}
+        UPSTREAM: ${{ inputs.upstream }}
+        VERSION_ARG: ${{ inputs.version_arg }}
+        BUILD_ARGS: ${{ inputs.build_args }}
+        FIRST_PARTY: ${{ inputs.first_party }}
+        REPOSITORY: ${{ inputs.repository }}
+        BUILD_DATE: ${{ inputs.build_date }}
+        OUT_DIR: ${{ inputs.out_dir }}
+        RUNNER_LABEL: ${{ runner.os }}-${{ runner.arch }}

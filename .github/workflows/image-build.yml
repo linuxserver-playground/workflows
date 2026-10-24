@@ -1,0 +1,518 @@
+name: Image build
+
+# The shared build for every docker-<name> repository in linuxserver-playground. Image repos call
+# this from their generated .github/workflows/build.yml (templates/build.yml). See README.md for the
+# job graph and CONVENTIONS.md in linuxserver-playground/builder for the contract it implements.
+
+on:
+  workflow_call:
+    inputs:
+      reason:
+        description: Why this build runs (push, upstream, packages, rebuild, manual)
+        type: string
+        default: push
+      workflows_ref:
+        description: The ref of linuxserver-playground/workflows the caller used; composite actions are checked out from it
+        type: string
+        default: v1
+      ci_image:
+        description: The ci harness image
+        type: string
+        default: ghcr.io/linuxserver-playground/ci:latest
+      builder_image:
+        description: The builder image used for 'render' and 'check'; empty skips templating
+        type: string
+        default: ghcr.io/linuxserver-playground/builder:latest
+      builder_ref:
+        description: Ref of linuxserver-playground/builder to pip install the contracts package from
+        type: string
+        default: main
+    secrets:
+      CONTROL_URL:
+        required: false
+      CONTROL_EVENTS_SECRET:
+        required: false
+
+env:
+  WORKFLOWS_REPOSITORY: linuxserver-playground/workflows
+  WORKFLOWS_PATH: .lsio-workflows
+
+jobs:
+  prepare:
+    name: Prepare
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      pull-requests: read
+    outputs:
+      name: ${{ steps.manifest.outputs.name }}
+      title: ${{ steps.manifest.outputs.title }}
+      base: ${{ steps.manifest.outputs.base }}
+      base_image: ${{ steps.manifest.outputs.base_image }}
+      platforms: ${{ steps.manifest.outputs.platforms }}
+      matrix: ${{ steps.manifest.outputs.matrix }}
+      version_arg: ${{ steps.manifest.outputs.version_arg }}
+      build_args: ${{ steps.manifest.outputs.build_args }}
+      first_party: ${{ steps.manifest.outputs.first_party }}
+      release_tag: ${{ steps.manifest.outputs.release_tag }}
+      release_branch: ${{ steps.manifest.outputs.release_branch }}
+      release_channel: ${{ steps.manifest.outputs.release_channel }}
+      test: ${{ steps.manifest.outputs.test }}
+      test_enabled: ${{ steps.manifest.outputs.test_enabled }}
+      mode: ${{ steps.manifest.outputs.mode }}
+      push_images: ${{ steps.manifest.outputs.push_images }}
+      image_path: ${{ steps.manifest.outputs.image_path }}
+      description: ${{ steps.manifest.outputs.description }}
+      manifest_json: ${{ steps.manifest.outputs.manifest_json }}
+      branch: ${{ steps.manifest.outputs.branch }}
+      sha: ${{ steps.generated.outputs.checkout_sha }}
+      sha7: ${{ steps.tags.outputs.sha7 }}
+      pr_number: ${{ steps.manifest.outputs.pr_number }}
+      checkout_sha: ${{ steps.generated.outputs.checkout_sha }}
+      generated_updated: ${{ steps.generated.outputs.generated_updated }}
+      upstream: ${{ steps.version.outputs.upstream }}
+      upstream_clean: ${{ steps.version.outputs.upstream_clean }}
+      semver: ${{ steps.version.outputs.semver }}
+      source: ${{ steps.version.outputs.source }}
+      source_url: ${{ steps.version.outputs.source_url }}
+      ls_build: ${{ steps.next.outputs.ls_build || '0' }}
+      previous_tag: ${{ steps.next.outputs.previous_tag }}
+      previous_release_url: ${{ steps.next.outputs.previous_release_url }}
+      head_already_released: ${{ steps.next.outputs.head_already_released || 'false' }}
+      primary_tag: ${{ steps.tags.outputs.primary_tag }}
+      tags: ${{ steps.tags.outputs.tags }}
+      all_tags: ${{ steps.tags.outputs.all_tags }}
+      arch_primary: ${{ steps.tags.outputs.arch_primary }}
+      version_label: ${{ steps.tags.outputs.version_label }}
+      build_date: ${{ steps.tags.outputs.build_date }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Check out shared workflows
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.WORKFLOWS_REPOSITORY }}
+          ref: ${{ inputs.workflows_ref }}
+          path: ${{ env.WORKFLOWS_PATH }}
+          persist-credentials: false
+
+      - name: Hide the shared workflows checkout from git
+        run: echo "/${WORKFLOWS_PATH}/" >> .git/info/exclude
+
+      - name: Read manifest
+        id: manifest
+        uses: ./.lsio-workflows/.github/actions/manifest
+        with:
+          builder_ref: ${{ inputs.builder_ref }}
+
+      - name: Resolve upstream version
+        id: version
+        uses: ./.lsio-workflows/.github/actions/resolve-version
+        with:
+          manifest: ${{ steps.manifest.outputs.manifest_path }}
+
+      - name: Next build number
+        id: next
+        if: steps.manifest.outputs.mode == 'live'
+        uses: ./.lsio-workflows/.github/actions/next-tag
+        with:
+          branch: ${{ steps.manifest.outputs.release_branch }}
+          release_tag: ${{ steps.manifest.outputs.release_tag }}
+          other_tags: ${{ steps.manifest.outputs.other_tags }}
+
+      - name: Update generated files (live)
+        id: generated_live
+        if: steps.manifest.outputs.mode == 'live'
+        run: ${WORKFLOWS_PATH}/scripts/update_generated.sh render "${BUILDER_IMAGE}" "${BRANCH}"
+        env:
+          BUILDER_IMAGE: ${{ inputs.builder_image }}
+          BRANCH: ${{ steps.manifest.outputs.release_branch }}
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Check generated files (pr, dev)
+        id: generated_check
+        if: steps.manifest.outputs.mode != 'live'
+        run: ${WORKFLOWS_PATH}/scripts/update_generated.sh check "${BUILDER_IMAGE}"
+        env:
+          BUILDER_IMAGE: ${{ inputs.builder_image }}
+          GITHUB_TOKEN: ${{ github.token }}
+
+      - name: Collect templating result
+        id: generated
+        run: |
+          set -euo pipefail
+          sha="${LIVE_SHA:-${CHECK_SHA:-}}"
+          [[ -n "${sha}" ]] || sha=$(git rev-parse HEAD)
+          echo "checkout_sha=${sha}" >> "${GITHUB_OUTPUT}"
+          echo "generated_updated=${LIVE_UPDATED:-false}" >> "${GITHUB_OUTPUT}"
+        env:
+          LIVE_SHA: ${{ steps.generated_live.outputs.checkout_sha }}
+          CHECK_SHA: ${{ steps.generated_check.outputs.checkout_sha }}
+          LIVE_UPDATED: ${{ steps.generated_live.outputs.generated_updated }}
+
+      - name: Compute tag set
+        id: tags
+        run: |
+          set -euo pipefail
+          result=$(python3 "${WORKFLOWS_PATH}/scripts/tags.py" \
+            --mode "${MODE}" --release-tag "${RELEASE_TAG}" --upstream-clean "${UPSTREAM_CLEAN}" \
+            --semver "${SEMVER}" --ls-build "${LS_BUILD:-0}" --branch "${BRANCH}" --sha "${SHA}" \
+            --pr-number "${PR_NUMBER}" --platforms "${PLATFORMS}")
+          echo "${result}"
+          {
+            echo "primary_tag=$(jq -r .primary_tag <<< "${result}")"
+            echo "tags=$(jq -c .tags <<< "${result}")"
+            echo "all_tags=$(jq -c .all_tags <<< "${result}")"
+            echo "arch_primary=$(jq -c .arch_primary <<< "${result}")"
+            echo "version_label=$(jq -r .version_label <<< "${result}")"
+            echo "sha7=${SHA:0:7}"
+            echo "build_date=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+          } >> "${GITHUB_OUTPUT}"
+        env:
+          MODE: ${{ steps.manifest.outputs.mode }}
+          RELEASE_TAG: ${{ steps.manifest.outputs.release_tag }}
+          UPSTREAM_CLEAN: ${{ steps.version.outputs.upstream_clean }}
+          SEMVER: ${{ steps.version.outputs.semver }}
+          LS_BUILD: ${{ steps.next.outputs.ls_build }}
+          BRANCH: ${{ steps.manifest.outputs.branch }}
+          SHA: ${{ steps.generated.outputs.checkout_sha }}
+          PR_NUMBER: ${{ steps.manifest.outputs.pr_number }}
+          PLATFORMS: ${{ steps.manifest.outputs.platforms }}
+
+      - name: Shellcheck and s6 permissions
+        run: ${WORKFLOWS_PATH}/scripts/prepare_checks.sh root
+
+      - name: Plan summary
+        run: |
+          {
+            echo "## Plan"
+            echo
+            echo "| | |"
+            echo "| --- | --- |"
+            echo "| image | \`${IMAGE_PATH}\` |"
+            echo "| mode | \`${MODE}\` (reason \`${REASON}\`) |"
+            echo "| primary tag | \`${PRIMARY_TAG}\` |"
+            echo "| tags | \`${TAGS}\` |"
+            echo "| upstream | \`${UPSTREAM}\` |"
+            echo "| commit | \`${SHA}\` |"
+            echo "| push images | \`${PUSH}\` |"
+          } >> "${GITHUB_STEP_SUMMARY}"
+        env:
+          IMAGE_PATH: ${{ steps.manifest.outputs.image_path }}
+          MODE: ${{ steps.manifest.outputs.mode }}
+          REASON: ${{ inputs.reason }}
+          PRIMARY_TAG: ${{ steps.tags.outputs.primary_tag }}
+          TAGS: ${{ steps.tags.outputs.tags }}
+          UPSTREAM: ${{ steps.version.outputs.upstream }}
+          SHA: ${{ steps.generated.outputs.checkout_sha }}
+          PUSH: ${{ steps.manifest.outputs.push_images }}
+
+  arch:
+    name: Build ${{ matrix.arch }}
+    needs: prepare
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.prepare.outputs.matrix) }}
+    outputs:
+      # Matrix legs write distinct keys; an empty value is dropped by the runner, so they do not collide.
+      test_success_amd64: ${{ matrix.arch == 'amd64' && steps.test.outputs.success || '' }}
+      test_success_arm64: ${{ matrix.arch == 'arm64' && steps.test.outputs.success || '' }}
+      digest_amd64: ${{ matrix.arch == 'amd64' && steps.build.outputs.digest || '' }}
+      digest_arm64: ${{ matrix.arch == 'arm64' && steps.build.outputs.digest || '' }}
+    steps:
+      - name: Check out shared workflows
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.WORKFLOWS_REPOSITORY }}
+          ref: ${{ inputs.workflows_ref }}
+          path: ${{ env.WORKFLOWS_PATH }}
+          persist-credentials: false
+
+      - name: Free disk space
+        uses: ./.lsio-workflows/.github/actions/free-disk
+
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.checkout_sha }}
+          persist-credentials: false
+          clean: false
+
+      - name: Set up buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: needs.prepare.outputs.push_images == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build
+        id: build
+        uses: ./.lsio-workflows/.github/actions/build-arch
+        with:
+          arch: ${{ matrix.arch }}
+          dockerfile: ${{ matrix.dockerfile }}
+          image_path: ${{ needs.prepare.outputs.image_path }}
+          arch_tag: ${{ fromJSON(needs.prepare.outputs.arch_primary)[matrix.arch] }}
+          push: ${{ needs.prepare.outputs.push_images }}
+          name: ${{ needs.prepare.outputs.name }}
+          title: ${{ needs.prepare.outputs.title }}
+          description: ${{ needs.prepare.outputs.description }}
+          version_label: ${{ needs.prepare.outputs.version_label }}
+          mode: ${{ needs.prepare.outputs.mode }}
+          branch: ${{ needs.prepare.outputs.branch }}
+          sha: ${{ needs.prepare.outputs.checkout_sha }}
+          upstream: ${{ needs.prepare.outputs.upstream }}
+          version_arg: ${{ needs.prepare.outputs.version_arg }}
+          build_args: ${{ needs.prepare.outputs.build_args }}
+          first_party: ${{ needs.prepare.outputs.first_party }}
+          build_date: ${{ needs.prepare.outputs.build_date }}
+          out_dir: out
+
+      - name: Test
+        id: test
+        uses: ./.lsio-workflows/.github/actions/test-arch
+        with:
+          image: ${{ steps.build.outputs.image_ref }}
+          arch: ${{ matrix.arch }}
+          mode: ${{ needs.prepare.outputs.mode }}
+          manifest_json: ${{ needs.prepare.outputs.manifest_json }}
+          previous_packages_url: ${{ needs.prepare.outputs.previous_tag && format('https://github.com/{0}/releases/download/{1}/package_versions.{2}.txt', github.repository, needs.prepare.outputs.previous_tag, matrix.arch) || '' }}
+          ci_image: ${{ inputs.ci_image }}
+          out_dir: out
+
+      - name: Upload bundle files
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundle-${{ matrix.arch }}
+          path: |
+            out/
+            !out/image.*.tar.gz
+          if-no-files-found: warn
+          retention-days: ${{ needs.prepare.outputs.mode == 'live' && 90 || 14 }}
+
+      - name: Upload image (not pushed)
+        if: always() && needs.prepare.outputs.push_images != 'true' && hashFiles(format('out/image.{0}.tar.gz', matrix.arch)) != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: image-${{ matrix.arch }}
+          path: out/image.${{ matrix.arch }}.tar.gz
+          retention-days: 7
+
+      - name: Fail on test failure
+        if: steps.test.outputs.success != 'true'
+        run: |
+          echo "::error::container tests failed on ${ARCH}; see the test report in the bundle-${ARCH} artifact"
+          exit 1
+        env:
+          ARCH: ${{ matrix.arch }}
+
+  publish:
+    name: Publish
+    needs: [prepare, arch]
+    if: always()
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+      packages: write
+      pull-requests: write
+      id-token: write
+      attestations: write
+    env:
+      MODE: ${{ needs.prepare.outputs.mode }}
+      PUSH: ${{ needs.prepare.outputs.push_images }}
+    steps:
+      - name: Determine result
+        id: result
+        run: |
+          set -euo pipefail
+          if [[ "${PREPARE}" != "success" ]]; then
+            result="${PREPARE}"; failed_job="prepare"
+          elif [[ "${ARCH}" != "success" ]]; then
+            result="${ARCH}"; failed_job="arch"
+          else
+            result="success"; failed_job=""
+          fi
+          [[ "${result}" == "skipped" ]] && result="cancelled"
+          echo "result=${result}" >> "${GITHUB_OUTPUT}"
+          echo "failed_job=${failed_job}" >> "${GITHUB_OUTPUT}"
+          echo "Overall result: ${result} ${failed_job:+(failed job: ${failed_job})}"
+        env:
+          PREPARE: ${{ needs.prepare.result }}
+          ARCH: ${{ needs.arch.result }}
+
+      - name: Check out shared workflows
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.WORKFLOWS_REPOSITORY }}
+          ref: ${{ inputs.workflows_ref }}
+          path: ${{ env.WORKFLOWS_PATH }}
+          persist-credentials: false
+
+      - name: Download bundle files
+        if: needs.prepare.result == 'success'
+        uses: actions/download-artifact@v5
+        with:
+          pattern: bundle-*
+          path: out
+          merge-multiple: true
+
+      - name: Write manifest.json
+        if: needs.prepare.result == 'success'
+        run: |
+          mkdir -p out
+          printf '%s\n' "${MANIFEST_JSON}" > "${RUNNER_TEMP}/image.json"
+        env:
+          MANIFEST_JSON: ${{ needs.prepare.outputs.manifest_json }}
+
+      - name: Log in to GHCR
+        if: steps.result.outputs.result == 'success' && env.PUSH == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Set up buildx
+        if: steps.result.outputs.result == 'success' && env.PUSH == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Publish tags
+        id: manifest
+        if: steps.result.outputs.result == 'success' && env.PUSH == 'true'
+        uses: ./.lsio-workflows/.github/actions/publish-manifest
+        with:
+          image_path: ${{ needs.prepare.outputs.image_path }}
+          primary_tag: ${{ needs.prepare.outputs.primary_tag }}
+          tags: ${{ needs.prepare.outputs.tags }}
+          platforms: ${{ needs.prepare.outputs.platforms }}
+
+      - name: Attest provenance (live)
+        if: steps.result.outputs.result == 'success' && env.PUSH == 'true' && env.MODE == 'live'
+        uses: actions/attest-build-provenance@v2
+        continue-on-error: true
+        with:
+          subject-name: ${{ needs.prepare.outputs.image_path }}
+          subject-digest: ${{ steps.manifest.outputs.index_digest }}
+          push-to-registry: true
+
+      - name: Emit build.json
+        id: bundle
+        if: needs.prepare.result == 'success' && needs.arch.result == 'success'
+        uses: ./.lsio-workflows/.github/actions/emit-bundle
+        with:
+          out_dir: out
+          prepare_outputs: ${{ toJSON(needs.prepare.outputs) }}
+          reason: ${{ inputs.reason }}
+          workflows_ref: ${{ inputs.workflows_ref }}
+          ci_image: ${{ inputs.ci_image }}
+          index_digest: ${{ steps.manifest.outputs.index_digest }}
+          control_url: ${{ secrets.CONTROL_URL }}
+          builder_ref: ${{ inputs.builder_ref }}
+
+      - name: Release (live)
+        id: release
+        if: steps.result.outputs.result == 'success' && env.PUSH == 'true' && env.MODE == 'live'
+        uses: ./.lsio-workflows/.github/actions/release
+        with:
+          tag: ${{ needs.prepare.outputs.primary_tag }}
+          sha: ${{ needs.prepare.outputs.checkout_sha }}
+          branch: ${{ needs.prepare.outputs.release_branch }}
+          prerelease: ${{ needs.prepare.outputs.release_channel == 'prerelease' }}
+          previous_tag: ${{ needs.prepare.outputs.previous_tag }}
+          head_already_released: ${{ needs.prepare.outputs.head_already_released }}
+          bundle_dir: out
+          manifest: ${{ runner.temp }}/image.json
+          upstream: ${{ needs.prepare.outputs.upstream }}
+          control_url: ${{ secrets.CONTROL_URL }}
+
+      - name: Upload bundle
+        id: artifact
+        if: always() && needs.prepare.result == 'success' && hashFiles('out/**') != ''
+        uses: actions/upload-artifact@v4
+        with:
+          name: bundle
+          path: |
+            out/
+            !out/image.*.tar.gz
+          retention-days: ${{ env.MODE == 'live' && 90 || 30 }}
+
+      - name: Comment on pull request
+        if: always() && env.MODE == 'pr' && needs.prepare.result == 'success'
+        run: |
+          python3 "${WORKFLOWS_PATH}/scripts/pr_comment.py" \
+            --repository "${GITHUB_REPOSITORY}" --pr "${PR_NUMBER}" --bundle out/build.json \
+            --image-path "${IMAGE_PATH}" --primary-tag "${PRIMARY_TAG}" --pushed "${PUSH}" \
+            --run-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
+            --artifact-name bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ needs.prepare.outputs.pr_number }}
+          IMAGE_PATH: ${{ needs.prepare.outputs.image_path }}
+          PRIMARY_TAG: ${{ needs.prepare.outputs.primary_tag }}
+
+      - name: Notify control plane
+        if: always()
+        uses: ./.lsio-workflows/.github/actions/notify-control
+        with:
+          control_url: ${{ secrets.CONTROL_URL }}
+          control_events_secret: ${{ secrets.CONTROL_EVENTS_SECRET }}
+          result: ${{ steps.result.outputs.result }}
+          failed_job: ${{ steps.result.outputs.failed_job }}
+          bundle_path: ${{ steps.bundle.outputs.bundle }}
+          image: ${{ needs.prepare.outputs.name }}
+          branch: ${{ needs.prepare.outputs.branch }}
+          mode: ${{ needs.prepare.outputs.mode }}
+          pr_number: ${{ needs.prepare.outputs.pr_number }}
+          reason: ${{ env.MODE == 'pr' && 'pull_request' || inputs.reason }}
+          release_url: ${{ steps.release.outputs.release_url }}
+          artifact_url: ${{ steps.artifact.outputs.artifact-url }}
+
+      - name: Job summary
+        if: always()
+        run: |
+          {
+            echo "## Result: ${RESULT}"
+            echo
+            [[ -n "${FAILED_JOB}" ]] && echo "Failed job: \`${FAILED_JOB}\`"
+            [[ -n "${RELEASE_URL}" ]] && echo "Release: ${RELEASE_URL}"
+            [[ -n "${INDEX_DIGEST}" ]] && echo "Index digest: \`${INDEX_DIGEST}\`"
+            [[ -n "${ARTIFACT_URL}" ]] && echo "Bundle artifact: ${ARTIFACT_URL}"
+            if [[ -f out/build.json ]]; then
+              echo
+              echo "<details><summary>build.json</summary>"
+              echo
+              echo '```json'
+              head -c 60000 out/build.json
+              echo '```'
+              echo "</details>"
+            fi
+          } >> "${GITHUB_STEP_SUMMARY}"
+        env:
+          RESULT: ${{ steps.result.outputs.result }}
+          FAILED_JOB: ${{ steps.result.outputs.failed_job }}
+          RELEASE_URL: ${{ steps.release.outputs.release_url }}
+          INDEX_DIGEST: ${{ steps.manifest.outputs.index_digest }}
+          ARTIFACT_URL: ${{ steps.artifact.outputs.artifact-url }}
+
+      - name: Fail if any job failed
+        if: steps.result.outputs.result != 'success'
+        run: |
+          echo "::error::build ${RESULT} (${FAILED_JOB})"
+          exit 1
+        env:
+          RESULT: ${{ steps.result.outputs.result }}
+          FAILED_JOB: ${{ steps.result.outputs.failed_job }}

@@ -1,0 +1,28 @@
+name: resolve-version
+description: Resolve the upstream version from the manifest's upstream.version block.
+
+inputs:
+  manifest:
+    description: Path to image.yml or the compact image.json written by the manifest action
+    required: true
+  github_token:
+    description: Token for api.github.com calls (rate limits)
+    default: ${{ github.token }}
+
+outputs:
+  upstream: { value: "${{ steps.resolve.outputs.upstream }}" }
+  upstream_clean: { value: "${{ steps.resolve.outputs.upstream_clean }}" }
+  semver: { value: "${{ steps.resolve.outputs.semver }}" }
+  source: { value: "${{ steps.resolve.outputs.source }}" }
+  source_url: { value: "${{ steps.resolve.outputs.source_url }}" }
+
+runs:
+  using: composite
+  steps:
+    - name: Resolve
+      id: resolve
+      shell: bash
+      run: ${GITHUB_ACTION_PATH}/resolve.sh "${MANIFEST}"
+      env:
+        MANIFEST: ${{ inputs.manifest }}
+        GITHUB_TOKEN: ${{ inputs.github_token }}
