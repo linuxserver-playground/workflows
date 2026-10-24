@@ -6,8 +6,13 @@
 #
 # The builder container is run with the repository mounted at /repo (its entrypoint cds there and
 # runs the builder CLI). 'render' is limited to the four in-repo files so .builder-out/ is never
-# written into a live checkout. The commit uses the job's
-# GITHUB_TOKEN, which never triggers another workflow run, so this cannot loop. Outputs:
+# written into a live checkout.
+#
+# The commit subject ends in "[skip ci]": the run that made the commit continues on it, so a second
+# run of the same workflow for that push would only build the same tree again (and, when HEAD was
+# already released, overwrite the same -lsN). GitHub skips push-triggered workflows for commits whose
+# message carries [skip ci]. The other bot commit, "Update package versions" (package-check), is
+# deliberately made without it because that push is what starts the release build. Outputs:
 # checkout_sha (the commit the arch jobs must build) and generated_updated (true|false).
 set -euo pipefail
 # shellcheck source=lib.sh
@@ -17,6 +22,7 @@ cmd="${1:?render|check}"
 builder_image="${2:-}"
 branch="${3:-}"
 GENERATED_FILES=(README.md AGENTS.md LICENSE .github/workflows/build.yml)
+COMMIT_SUBJECT="Update generated files [skip ci]"
 head_sha=$(git rev-parse HEAD)
 
 if [[ -z "${builder_image}" ]]; then
@@ -73,7 +79,7 @@ git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 commit_and_push() {
   # $@ = files to include
   git add -- "$@"
-  git commit --quiet -m "Update generated files"
+  git commit --quiet -m "${COMMIT_SUBJECT}"
   retry 3 10 git pull --rebase --quiet origin "${branch}"
   retry 3 10 git push --quiet origin "HEAD:${branch}"
 }
