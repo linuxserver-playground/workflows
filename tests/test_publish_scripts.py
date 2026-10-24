@@ -129,7 +129,9 @@ def test_bundle_tolerates_missing_arch(tmp_path):
     write_out_dir(out, arches=("amd64",))
     bundle = emit_bundle.build_bundle(prepare_outputs(), out, repository="o/r", run_id=1, run_url="https://x/1", workflows_ref="v1", ci_image="ci", reason="push")
     assert _validate("bundle", bundle) == []
-    assert len(bundle["platforms"]) == 1
+    by_arch = {p["arch"]: p for p in bundle["platforms"]}
+    assert by_arch["amd64"]["result"] == "success" and "digest" in by_arch["amd64"]
+    assert by_arch["arm64"] == {"arch": "arm64", "result": "failure"}  # arch job produced nothing
     assert bundle["test"]["success"] is False  # arm64 report missing
 
 

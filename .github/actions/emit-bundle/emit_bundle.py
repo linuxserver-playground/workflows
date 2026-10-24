@@ -125,13 +125,18 @@ def build_bundle(prepare: dict[str, Any], out: Path, *, repository: str, run_id:
     primary_arch = "amd64" if "amd64" in platforms else platforms[0]
     amd = arch_info.get(primary_arch) or {}
 
+    # One record per platform. A platform whose arch job never produced arch.<arch>.json (build failed or
+    # was cancelled) is recorded with result failure and no digest, which the schema allows.
     plat_records = []
     for a in platforms:
         info = arch_info[a]
         if not info.get("digest"):
+            plat_records.append({"arch": a, "result": "failure"})
             continue
+        test = tests.get(a) or {}
+        result = "success" if (test.get("success") or test.get("skipped")) or not tests.get(a) else "failure"
         plat_records.append(
-            _prune({"arch": a, "digest": info["digest"], "size": _int(info.get("size")), "uncompressed_size": _int(info.get("uncompressed_size")) or None, "layers": _int(info.get("layers")) or None, "runner": info.get("runner"), "build_seconds": info.get("build_seconds")})
+            _prune({"arch": a, "result": result, "digest": info["digest"], "size": _int(info.get("size")), "uncompressed_size": _int(info.get("uncompressed_size")) or None, "layers": _int(info.get("layers")) or None, "runner": info.get("runner"), "build_seconds": info.get("build_seconds")})
         )
 
     test_enabled = str(prepare.get("test_enabled", "true")).lower() != "false"
@@ -184,7 +189,7 @@ def build_bundle(prepare: dict[str, Any], out: Path, *, repository: str, run_id:
         "created": created or dt.datetime.now(tz=dt.UTC).strftime("%Y-%m-%dT%H:%M:%SZ"),
         "reason": reason,
         "base": _prune({"family": prepare.get("base", "other"), "image": amd.get("base_image") or prepare.get("base_image") or "unknown", "digest": base_digest if SHA256_RE.match(base_digest) else None}),
-        "platforms": plat_records or [{"arch": platforms[0], "digest": "sha256:" + "0" * 64, "size": 0}],
+        "platforms": plat_records,
         "labels": amd.get("labels") or {},
         "config": _image_config(_load_json(out / f"image-config.{primary_arch}.json")),
         "dockerfile": {a: arch_info[a].get("dockerfile") or (out / f"dockerfile.{a}").read_text(encoding="utf-8") if (out / f"dockerfile.{a}").is_file() else arch_info[a].get("dockerfile", "") for a in platforms},
@@ -233,7 +238,7 @@ def summary_markdown(bundle: dict[str, Any]) -> str:
     if bundle.get("index_digest"):
         lines.append(f"- index digest `{bundle['index_digest']}`")
     for p in bundle["platforms"]:
-        lines.append(f"- `{p['arch']}`: `{p['digest']}` {p.get('size', 0) // 1024 // 1024} MiB compressed, {p.get('layers', '?')} layers")
+        lines.append(f"- `{p['arch']}`: {p['result']} `{p.get('digest', '')}` {(p.get('size') or 0) // 1024 // 1024} MiB compressed, {p.get('layers', '?')} layers")
     for a, s in (bundle.get("packages") or {}).items():
         lines.append(f"- packages `{a}`: {s['count']} ({s['distro']}), hash `{s['hash']}`")
     lines.append(f"- assets: {', '.join(a['name'] for a in bundle['assets']) or 'none'}")
