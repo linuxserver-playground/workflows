@@ -1,0 +1,43 @@
+# Minimal image repository used by the workflows repo for integration runs.
+schema: 1
+name: example
+title: Example
+summary: |
+  A minimal LinuxServer image that adds one package to the Alpine base image. It exists to exercise the
+  shared build workflow end to end.
+
+upstream:
+  url: https://github.com/linuxserver-playground/workflows
+  version:
+    type: os
+  notes:
+    type: none
+
+release:
+  branch: main
+  tag: latest
+  channel: stable
+  tags:
+    - { tag: latest, description: Stable builds }
+
+build:
+  base: alpine
+  platforms: [amd64, arm64]
+
+test:
+  enabled: true
+  startup_timeout: 60
+
+runtime:
+  volumes:
+    - { path: /config, description: Persistent configuration }
+  readonly: { supported: true }
+  nonroot: { supported: true }
+
+docs:
+  categories: [Tools]
+  setup: |
+    There is nothing to set up; the container starts, writes `/config/example/settings.json` and idles.
+
+changelog:
+  - { date: 2026-10-24, text: Initial fixture. }

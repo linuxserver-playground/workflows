@@ -1,0 +1,230 @@
+name: Mod build
+
+# Shared build for linuxserver-playground/docker-mods branches. Each mod branch is named
+# <target>-<name> (the base image it targets and the mod name) and carries a Dockerfile and mod.yml.
+# Images go to GHCR only:
+#   push to branch <target>-<name>  ghcr.io/<org>/mods:<target>-<name> and :<target>-<name>-<sha>
+#   pull_request                    ghcr.io/<org>/untrusted-pr/mods:<target>-<name>-pr-<n>
+# arm64 is built natively on ubuntu-24.04-arm when multi_arch is true.
+
+on:
+  workflow_call:
+    inputs:
+      name:
+        description: Mod name (the part of the branch after <target>-)
+        type: string
+        required: true
+      target:
+        description: Base image the mod targets (universal, swag, code-server, ...)
+        type: string
+        required: true
+      multi_arch:
+        description: Also build arm64
+        type: boolean
+        default: false
+      mod_version:
+        description: Optional MOD_VERSION build arg, also published as an extra tag
+        type: string
+        default: ""
+      workflows_ref:
+        type: string
+        default: v1
+
+env:
+  WORKFLOWS_REPOSITORY: linuxserver-playground/workflows
+  WORKFLOWS_PATH: .lsio-workflows
+
+jobs:
+  plan:
+    name: Plan
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      image_path: ${{ steps.plan.outputs.image_path }}
+      primary_tag: ${{ steps.plan.outputs.primary_tag }}
+      tags: ${{ steps.plan.outputs.tags }}
+      push: ${{ steps.plan.outputs.push }}
+      mode: ${{ steps.plan.outputs.mode }}
+    steps:
+      - name: Plan
+        id: plan
+        run: |
+          set -euo pipefail
+          org="${GITHUB_REPOSITORY%%/*}"
+          sha7="${SHA:0:7}"
+          base_tag="${TARGET}-${NAME}"
+          if [[ "${GITHUB_EVENT_NAME}" == "pull_request" ]]; then
+            mode="pr"
+            image_path="ghcr.io/${org}/untrusted-pr/mods"
+            primary="${base_tag}-pr-${PR_NUMBER}"
+            tags="[\"${primary}\"]"
+            push="true"
+            [[ "${FORK}" == "true" ]] && push="false"
+          elif [[ "${GITHUB_REF_NAME}" == "${base_tag}" ]]; then
+            mode="live"
+            image_path="ghcr.io/${org}/mods"
+            primary="${base_tag}"
+            tags="[\"${base_tag}\",\"${base_tag}-${sha7}\"]"
+            if [[ -n "${MOD_VERSION}" ]]; then
+              tags="[\"${base_tag}\",\"${base_tag}-${sha7}\",\"${base_tag}-${MOD_VERSION}\",\"${base_tag}-${MOD_VERSION}-${sha7}\"]"
+            fi
+            push="true"
+          else
+            echo "::error::branch ${GITHUB_REF_NAME} does not match the mod name ${base_tag}; only that branch publishes"
+            mode="dev"
+            image_path="ghcr.io/${org}/dev/mods"
+            primary="${base_tag}-${sha7}"
+            tags="[\"${primary}\"]"
+            push="false"
+          fi
+          if [[ "${MULTI_ARCH}" == "true" ]]; then
+            matrix='{"include":[{"arch":"amd64","runner":"ubuntu-24.04","prefix":"amd64"},{"arch":"arm64","runner":"ubuntu-24.04-arm","prefix":"arm64v8"}]}'
+          else
+            matrix='{"include":[{"arch":"amd64","runner":"ubuntu-24.04","prefix":"amd64"}]}'
+          fi
+          {
+            echo "matrix=${matrix}"
+            echo "image_path=${image_path}"
+            echo "primary_tag=${primary}"
+            echo "tags=${tags}"
+            echo "push=${push}"
+            echo "mode=${mode}"
+          } >> "${GITHUB_OUTPUT}"
+          echo "mode=${mode} image=${image_path} tags=${tags} push=${push}"
+        env:
+          NAME: ${{ inputs.name }}
+          TARGET: ${{ inputs.target }}
+          MULTI_ARCH: ${{ inputs.multi_arch }}
+          MOD_VERSION: ${{ inputs.mod_version }}
+          SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          FORK: ${{ github.event.pull_request.head.repo.fork }}
+
+  build:
+    name: Build ${{ matrix.arch }}
+    needs: plan
+    runs-on: ${{ matrix.runner }}
+    permissions:
+      contents: read
+      packages: write
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+
+      - name: Set up buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: needs.plan.outputs.push == 'true'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Build and push
+        run: |
+          set -euo pipefail
+          platform="linux/${ARCH}"
+          [[ "${ARCH}" == "arm64" ]] && platform="linux/arm64/v8"
+          args=(--no-cache --pull --platform "${platform}"
+            --label "org.opencontainers.image.source=${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}"
+            --label "org.opencontainers.image.revision=${GITHUB_SHA}"
+            --label "org.opencontainers.image.vendor=linuxserver.io"
+            --label "org.opencontainers.image.licenses=GPL-3.0-only"
+            --label "org.opencontainers.image.title=${TARGET}-${NAME}"
+            --label "io.linuxserver.image.mode=${MODE}")
+          [[ -n "${MOD_VERSION}" ]] && args+=(--build-arg "MOD_VERSION=${MOD_VERSION}")
+          tag="${IMAGE_PATH}:${PREFIX}-${PRIMARY_TAG}"
+          if [[ "${PUSH}" == "true" ]]; then
+            docker buildx build "${args[@]}" --push -t "${tag}" .
+            echo "pushed \`${tag}\`" >> "${GITHUB_STEP_SUMMARY}"
+          else
+            docker buildx build "${args[@]}" --load -t "${tag}" .
+            echo "built \`${tag}\` (not pushed)" >> "${GITHUB_STEP_SUMMARY}"
+          fi
+        env:
+          ARCH: ${{ matrix.arch }}
+          PREFIX: ${{ matrix.prefix }}
+          IMAGE_PATH: ${{ needs.plan.outputs.image_path }}
+          PRIMARY_TAG: ${{ needs.plan.outputs.primary_tag }}
+          PUSH: ${{ needs.plan.outputs.push }}
+          MODE: ${{ needs.plan.outputs.mode }}
+          NAME: ${{ inputs.name }}
+          TARGET: ${{ inputs.target }}
+          MOD_VERSION: ${{ inputs.mod_version }}
+
+  publish:
+    name: Publish
+    needs: [plan, build]
+    if: needs.plan.outputs.push == 'true'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+      pull-requests: write
+    steps:
+      - name: Log in to GHCR
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Set up buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Create manifests
+        run: |
+          set -euo pipefail
+          mapfile -t tags < <(jq -r '.[]' <<< "${TAGS}")
+          mapfile -t prefixes < <(jq -r '.include[].prefix' <<< "${MATRIX}")
+          sources=()
+          for p in "${prefixes[@]}"; do sources+=("${IMAGE_PATH}:${p}-${PRIMARY_TAG}"); done
+          targets=()
+          for t in "${tags[@]}"; do targets+=(-t "${IMAGE_PATH}:${t}"); done
+          docker buildx imagetools create "${targets[@]}" "${sources[@]}"
+          if (( ${#prefixes[@]} > 1 )); then
+            for p in "${prefixes[@]}"; do
+              twins=()
+              for t in "${tags[@]}"; do [[ "${t}" != "${PRIMARY_TAG}" ]] && twins+=(-t "${IMAGE_PATH}:${p}-${t}"); done
+              (( ${#twins[@]} )) && docker buildx imagetools create "${twins[@]}" "${IMAGE_PATH}:${p}-${PRIMARY_TAG}"
+            done
+          fi
+          {
+            echo "## Published"
+            for t in "${tags[@]}"; do echo "- \`${IMAGE_PATH}:${t}\`"; done
+          } >> "${GITHUB_STEP_SUMMARY}"
+        env:
+          IMAGE_PATH: ${{ needs.plan.outputs.image_path }}
+          PRIMARY_TAG: ${{ needs.plan.outputs.primary_tag }}
+          TAGS: ${{ needs.plan.outputs.tags }}
+          MATRIX: ${{ needs.plan.outputs.matrix }}
+
+      - name: Comment on pull request
+        if: needs.plan.outputs.mode == 'pr'
+        run: |
+          body="<!-- lsio-mod-build -->
+          PR build pushed to \`${IMAGE_PATH}:${PRIMARY_TAG}\`.
+
+          > [!WARNING]
+          > Unreviewed pull request build in the \`untrusted-pr\` namespace. Not for production use; deleted when the pull request closes."
+          existing=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" --jq '.[] | select(.body | contains("<!-- lsio-mod-build -->")) | .id' | head -1)
+          if [[ -n "${existing}" ]]; then
+            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${existing}" -f body="${body}" >/dev/null
+          else
+            gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" -f body="${body}" >/dev/null
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          IMAGE_PATH: ${{ needs.plan.outputs.image_path }}
+          PRIMARY_TAG: ${{ needs.plan.outputs.primary_tag }}

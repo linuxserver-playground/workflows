@@ -4,7 +4,9 @@
 #   update_generated.sh render <builder image> <branch>   live: render, commit once, push, continue
 #   update_generated.sh check  <builder image>            pr/dev: fail on drift
 #
-# The builder container is run with the repository mounted at /work. The commit uses the job's
+# The builder container is run with the repository mounted at /repo (its entrypoint cds there and
+# runs the builder CLI). 'render' is limited to the four in-repo files so .builder-out/ is never
+# written into a live checkout. The commit uses the job's
 # GITHUB_TOKEN, which never triggers another workflow run, so this cannot loop. Outputs:
 # checkout_sha (the commit the arch jobs must build) and generated_updated (true|false).
 set -euo pipefail
@@ -30,7 +32,7 @@ endgroup
 
 run_builder() {
   docker run --rm \
-    -v "${PWD}:/work" -w /work \
+    -v "${PWD}:/repo" \
     -e GITHUB_TOKEN="${GITHUB_TOKEN:-}" \
     -e GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-}" \
     --user "$(id -u):$(id -g)" \
@@ -52,7 +54,7 @@ fi
 [[ -n "${branch}" ]] || die "render needs the branch name"
 
 group "builder render"
-run_builder render
+run_builder render --only "$(IFS=,; echo "${GENERATED_FILES[*]}")"
 endgroup
 
 changed=$(git status --porcelain -- "${GENERATED_FILES[@]}" | awk '{print $2}')

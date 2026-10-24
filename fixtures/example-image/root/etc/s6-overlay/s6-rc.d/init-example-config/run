@@ -1,0 +1,8 @@
+#!/usr/bin/with-contenv bash
+# shellcheck shell=bash
+
+mkdir -p /config/example
+if [[ ! -f /config/example/settings.json ]]; then
+  echo '{"example": true}' > /config/example/settings.json
+fi
+lsiown -R abc:abc /config/example

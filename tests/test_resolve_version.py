@@ -382,6 +382,11 @@ def test_examples_from_builder_repo_parse():
     examples = Path(__file__).resolve().parents[2] / "builder" / "examples"
     if not examples.is_dir():
         pytest.skip("builder examples not checked out next to this repo")
+    schema = json.loads((examples.parent / "schemas" / "image.schema.json").read_text())
+    known = set(schema["$defs"]["version_source"]["properties"]["type"]["enum"])
+    found = set()
     for path in examples.glob("*/image.yml"):
         m = rv.load_manifest(path)
-        assert m["upstream"]["version"]["type"] in {"json", "pip", "github_release", "os"}
+        assert m["upstream"]["version"]["type"] in known
+        found.add(m["upstream"]["version"]["type"])
+    assert found

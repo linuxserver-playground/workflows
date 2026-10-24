@@ -3,7 +3,7 @@
 Assemble build.json (bundle.schema.json) from the prepare outputs and the per-arch bundle directory.
 
     emit_bundle.py --out out/ --prepare prepare.json --repository owner/repo --run-id N --run-url URL \
-        --workflows-ref v1 --ci-image ghcr.io/.../ci:latest --reason push [--index-digest sha256:..] \
+        --workflows-ref v1 --ci-image <ci image> --reason push [--index-digest sha256:..] \
         [--control-url URL]
 
 ``prepare.json`` is ``toJSON(needs.prepare.outputs)``. The per-arch directory holds what build-arch

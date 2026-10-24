@@ -2,7 +2,7 @@
 """
 Post (or update in place) the single build report comment on a pull request.
 
-    pr_comment.py --repository owner/repo --pr 12 --bundle out/build.json --image-path ghcr.io/org/untrusted-pr/x \
+    pr_comment.py --repository owner/repo --pr 12 --bundle out/build.json --image-path ghcr.io/linuxserver-playground/untrusted-pr/x \
         --primary-tag pr-12-abc1234 --pushed true --run-url URL --artifact-name bundle
 
 The comment is found again by its hidden marker. ``compose`` is pure and unit-tested; GitHub calls go
