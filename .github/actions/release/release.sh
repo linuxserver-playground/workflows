@@ -70,12 +70,10 @@ if python3 -c 'import contracts' 2>/dev/null; then
   python3 -m contracts bundle "${BUNDLE_DIR}/build.json"
 fi
 
-# ---- Tag and release ----
+# ---- Tag and release: the tag at the sha, the release on the branch (CONVENTIONS §3) ----
 if [[ "${exists}" == "false" ]]; then
-  group "Creating tag and release ${TAG} at ${SHA}"
-  create_args=(--repo "${REPOSITORY}" --target "${SHA}" --title "${TAG}" --notes-file "${work}/body.md")
-  [[ "${PRERELEASE}" == "true" ]] && create_args+=(--prerelease)
-  retry 3 15 gh release create "${TAG}" "${create_args[@]}"
+  group "Creating tag ${TAG} at ${SHA} and release on ${BRANCH}"
+  "${GITHUB_ACTION_PATH}/create_release.sh" "${TAG}" "${SHA}" "${BRANCH}" "${REPOSITORY}" "${work}/body.md" "${PRERELEASE}"
   endgroup
 fi
 
