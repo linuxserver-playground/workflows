@@ -68,3 +68,18 @@ def test_tag_pattern_shapes():
     assert next_tag.matches_branch("develop-1.2.3-ls1", "latest", ["develop"]) is None
     assert next_tag.matches_branch("develop-1.2.3-ls1", "develop", []).group("upstream") == "1.2.3"
     assert next_tag.matches_branch("1.2.3", "latest", []) is None
+
+
+def test_package_change_commit_moves_head_so_the_follow_up_build_gets_n_plus_one():
+    """A package check that finds changes commits 'Update package versions' and never releases. The
+    push starts a normal build on the new HEAD, which no release tag points at, so it is N+1 even
+    though the previous HEAD had already been released as N."""
+    rels = releases()
+    # The weekly check runs on the released commit: HEAD carries 4.0.20.3014-ls2, so a release from
+    # here would be ls2 again (a rebuild). The check does not release.
+    check = next_tag.pick(rels, "latest", "master", other_tags=["develop"], head_tags=["4.0.20.3014-ls2"])
+    assert check["ls_build"] == 2 and check["head_already_released"] is True
+    # The follow-up build runs on the package commit, which has no tag.
+    follow_up = next_tag.pick(rels, "latest", "master", other_tags=["develop"], head_tags=[])
+    assert follow_up["ls_build"] == 3 and follow_up["previous_tag"] == "4.0.20.3014-ls2"
+    assert follow_up["head_already_released"] is False

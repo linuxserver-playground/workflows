@@ -1,0 +1,48 @@
+name: package-check
+description: The reason=packages check of a live build. Compare the fresh amd64 package table with the committed package_versions.txt and, when it changed, commit the new table to the live branch so the resulting push starts the release build. Never publishes or releases.
+
+inputs:
+  out_dir:
+    description: Directory holding the merged bundle-<arch> artifacts (package_versions.<arch>.txt)
+    required: true
+  repo_dir:
+    description: Checkout of the image repository on the live branch, with push credentials
+    required: true
+  sha:
+    description: The commit that was built; package_versions.txt is read from it
+    required: true
+  branch:
+    description: The live branch to commit to
+    required: true
+  previous_tag:
+    description: Previous release tag of the branch; its package_versions.arm64.txt asset is compared for reporting
+    default: ""
+  repository:
+    default: ${{ github.repository }}
+
+outputs:
+  changed:
+    description: "true when the committed table differs from the fresh one (or is missing) and a commit was pushed"
+    value: ${{ steps.check.outputs.changed }}
+  commit_sha:
+    description: The Update package versions commit, when one was pushed
+    value: ${{ steps.check.outputs.commit_sha }}
+  fresh_hash:
+    value: ${{ steps.check.outputs.fresh_hash }}
+  committed_hash:
+    value: ${{ steps.check.outputs.committed_hash }}
+
+runs:
+  using: composite
+  steps:
+    - name: Compare package versions
+      id: check
+      shell: bash
+      run: ${GITHUB_ACTION_PATH}/package_check.sh
+      env:
+        OUT_DIR: ${{ inputs.out_dir }}
+        REPO_DIR: ${{ inputs.repo_dir }}
+        SHA: ${{ inputs.sha }}
+        BRANCH: ${{ inputs.branch }}
+        PREVIOUS_TAG: ${{ inputs.previous_tag }}
+        REPOSITORY: ${{ inputs.repository }}
