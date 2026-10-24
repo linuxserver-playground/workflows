@@ -197,16 +197,20 @@ def test_package_check_unchanged_commits_nothing(env, tmp_path):
     assert "packages unchanged" in Path(env["GITHUB_STEP_SUMMARY"]).read_text()
 
 
-def test_package_check_changed_commits_without_skip_ci(env, tmp_path):
+def test_package_check_changed_commits_and_dispatches_the_release_build(env, tmp_path):
     origin, clone = make_remote(tmp_path, {"package_versions.txt": TABLE})
-    proc = package_check(env, tmp_path, clone, NEW_TABLE)
+    extra = gh_env(env, tmp_path)
+    proc = package_check(env, tmp_path, clone, NEW_TABLE, **extra)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     out = outputs(env)
     assert out["changed"] == "true"
-    assert git("log", "-1", "--format=%s", cwd=origin) == "Update package versions"  # no [skip ci]: this push starts the release build
+    assert git("log", "-1", "--format=%s", cwd=origin) == "Update package versions"
     assert git("rev-parse", "main", cwd=origin) == out["commit_sha"]
     assert git("show", "main:package_versions.txt", cwd=origin) == NEW_TABLE.rstrip("\n")
-    assert f"release build triggered by commit `{out['commit_sha']}`" in Path(env["GITHUB_STEP_SUMMARY"]).read_text()
+    # A workflow-token push never triggers workflows, so the release build is dispatched explicitly.
+    assert "workflow run build.yml --repo o/docker-example --ref main -f reason=rebuild" in Path(extra["GH_LOG"]).read_text()
+    summary = Path(env["GITHUB_STEP_SUMMARY"]).read_text()
+    assert f"committed as `{out['commit_sha']}`" in summary and "release build dispatched" in summary
 
 
 def test_package_check_seeds_a_missing_file(env, tmp_path):

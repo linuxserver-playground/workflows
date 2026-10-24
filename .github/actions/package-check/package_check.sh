@@ -104,9 +104,19 @@ done
 commit_sha=$(git rev-parse HEAD)
 endgroup
 
-notice "Committed ${COMMIT_SUBJECT} as ${commit_sha}; its push starts the release build."
+# A push made with the workflow token never triggers workflows (GitHub blocks recursive runs), so the
+# release build is dispatched explicitly for the branch, which now has the new table at its head.
+group "Dispatching the release build for ${BRANCH}"
+if gh workflow run build.yml --repo "${REPOSITORY}" --ref "${BRANCH}" -f reason=rebuild; then
+  notice "Committed ${COMMIT_SUBJECT} as ${commit_sha} and dispatched the release build for ${BRANCH}."
+  dispatched="dispatched"
+else
+  warn "Committed ${COMMIT_SUBJECT} as ${commit_sha} but could not dispatch the release build; the control plane's next check or a manual run will pick it up."
+  dispatched="not dispatched (see warning)"
+fi
+endgroup
 set_output changed true
 set_output commit_sha "${commit_sha}"
 summary "### Package check
 
-packages changed (\`${committed_hash}\` -> \`${fresh_hash}\`), release build triggered by commit \`${commit_sha}\`; arm64 against ${PREVIOUS_TAG:-no previous release}: ${arm64_status}. Nothing published from this run."
+packages changed (\`${committed_hash}\` -> \`${fresh_hash}\`), committed as \`${commit_sha}\`, release build ${dispatched}; arm64 against ${PREVIOUS_TAG:-no previous release}: ${arm64_status}. Nothing published from this run."

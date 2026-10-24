@@ -92,11 +92,12 @@ by md5 with trailing whitespace normalised, and compares arm64 against the previ
 - Unchanged: nothing is published or released; the bundle is a workflow artifact only; `build.summary` says
   `result: skipped` (no `failed_job`); the job summary says "packages unchanged"; the run succeeds.
 - Changed, or no `package_versions.txt` in the repo yet: the fresh amd64 table is committed to the live
-  branch as `Update package versions` (fetch, rebase, push, retried). That push is what starts the normal
-  release build, exactly as with Jenkins; the check run itself publishes and releases nothing, reports
-  `result: success` and "packages changed, release build triggered by commit `<sha>`". The follow-up build
-  runs on the new HEAD, which no release tag points at, so it gets `-ls<N+1>`. A push that still fails after
-  the retries fails the run.
+  branch as `Update package versions` (fetch, rebase, push, retried), and the check run then dispatches the
+  normal release build for the branch with `workflow_dispatch` (a push made with the workflow token never
+  triggers workflows, so the dispatch is explicit; the caller grants `actions: write` for it). The check run
+  itself publishes and releases nothing and reports `result: success`. The follow-up build runs on the new
+  HEAD, which no release tag points at, so it gets `-ls<N+1>`. A push that still fails after the retries
+  fails the run; a failed dispatch is a warning (the control plane's next check catches up).
 
 On a normal live release the committed `package_versions.txt` may lag the image: the release build does not
 commit it, only the next package check does. The authoritative table of a release is its

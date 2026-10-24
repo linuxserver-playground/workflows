@@ -1,5 +1,5 @@
 name: package-check
-description: The reason=packages check of a live build. Compare the fresh amd64 package table with the committed package_versions.txt and, when it changed, commit the new table to the live branch so the resulting push starts the release build. Never publishes or releases.
+description: The reason=packages check of a live build. Compare the fresh amd64 package table with the committed package_versions.txt and, when it changed, commit the new table to the live branch then dispatch the release build for the branch (a workflow-token push does not trigger workflows). Never publishes or releases.
 
 inputs:
   out_dir:
@@ -19,6 +19,9 @@ inputs:
     default: ""
   repository:
     default: ${{ github.repository }}
+  github_token:
+    description: Token with contents and actions write, for the commit and the workflow_dispatch
+    default: ${{ github.token }}
 
 outputs:
   changed:
@@ -46,3 +49,4 @@ runs:
         BRANCH: ${{ inputs.branch }}
         PREVIOUS_TAG: ${{ inputs.previous_tag }}
         REPOSITORY: ${{ inputs.repository }}
+        GH_TOKEN: ${{ inputs.github_token }}
