@@ -6,7 +6,7 @@
 # CONVENTIONS §3: the Release's target_commitish is always the branch name, never a sha, so a
 # branch's releases can be listed without parsing tag prefixes. GitHub only honours target_commitish
 # as the commit to tag when the tag does not exist yet, so the tag is created first, explicitly at the
-# built sha through the refs API, and the release then names the branch. An existing tag is accepted
+# built sha with git (see below), and the release then names the branch. An existing tag is accepted
 # when it points at the same commit (a re-run) and refused otherwise: a release tag never moves.
 set -euo pipefail
 # shellcheck source=../../../scripts/lib.sh
@@ -32,7 +32,17 @@ if existing=$(gh api "repos/${repository}/git/ref/tags/${tag}" --jq '.object.typ
   [[ "${obj_sha}" == "${sha}" ]] || die "tag ${tag} already exists at ${obj_sha}, not at ${sha}; a release tag never moves"
   notice "tag ${tag} already points at ${sha}"
 else
-  retry 3 10 gh api --method POST "repos/${repository}/git/refs" -f "ref=refs/tags/${tag}" -f "sha=${sha}" >/dev/null
+  # The refs API answers 403 "Resource not accessible by integration" to the workflow token even with
+  # contents: write, while a plain git push with the same token works (the generated-files commit
+  # relies on it). So the tag is pushed from a minimal fetch of the built commit.
+  remote="${RELEASE_GIT_REMOTE:-https://x-access-token:${GITHUB_TOKEN:?GITHUB_TOKEN}@github.com/${repository}.git}"
+  work=$(mktemp -d)
+  git init --quiet "${work}"
+  git -C "${work}" remote add origin "${remote}"
+  retry 3 10 git -C "${work}" fetch --quiet --depth 1 origin "${sha}"
+  git -C "${work}" tag "${tag}" "${sha}"
+  retry 3 10 git -C "${work}" push --quiet origin "refs/tags/${tag}"
+  rm -rf "${work}"
   echo "created tag ${tag} at ${sha}"
 fi
 

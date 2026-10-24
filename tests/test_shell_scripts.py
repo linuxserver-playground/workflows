@@ -274,17 +274,20 @@ def gh_env(env: dict, tmp_path: Path, **extra: str) -> dict:
 def test_release_tags_the_sha_and_targets_the_branch(env, tmp_path):
     notes = tmp_path / "body.md"
     notes.write_text("notes")
-    extra = gh_env(env, tmp_path)
-    proc = run(CREATE_RELEASE, env, "4.0.20.3014-ls3", SHA, "master", "o/docker-sonarr", str(notes), "false", extra=extra)
+    # The tag is pushed with git to the repository (here a local bare remote), not through the refs API.
+    origin, _clone = make_remote(tmp_path, {"README.md": "# x\n"})
+    sha = git("rev-parse", "HEAD", cwd=origin)
+    extra = gh_env(env, tmp_path, RELEASE_GIT_REMOTE=str(origin))
+    proc = run(CREATE_RELEASE, env, "4.0.20.3014-ls3", sha, "master", "o/docker-sonarr", str(notes), "false", extra=extra)
     assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert git("rev-parse", "refs/tags/4.0.20.3014-ls3", cwd=origin) == sha
     assert Path(extra["GH_LOG"]).read_text().splitlines() == [
         "api repos/o/docker-sonarr/git/ref/tags/4.0.20.3014-ls3 --jq .object.type + \" \" + .object.sha",
-        f"api --method POST repos/o/docker-sonarr/git/refs -f ref=refs/tags/4.0.20.3014-ls3 -f sha={SHA}",
         f"release create 4.0.20.3014-ls3 --repo o/docker-sonarr --target master --title 4.0.20.3014-ls3 --notes-file {notes}",
     ]
     # Prerelease flag, and the sha never appears as the release target.
-    extra = gh_env(env, tmp_path)
-    proc = run(CREATE_RELEASE, env, "develop-5.0.1-ls7", SHA, "develop", "o/r", str(notes), "true", extra=extra)
+    extra = gh_env(env, tmp_path, RELEASE_GIT_REMOTE=str(origin))
+    proc = run(CREATE_RELEASE, env, "develop-5.0.1-ls7", sha, "develop", "o/r", str(notes), "true", extra=extra)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     last = Path(extra["GH_LOG"]).read_text().splitlines()[-1]
     assert last.endswith(f"--target develop --title develop-5.0.1-ls7 --notes-file {notes} --prerelease")
