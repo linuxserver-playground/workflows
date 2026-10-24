@@ -60,14 +60,20 @@ retry_ghcr() {
   local errfile exit_code delay pause
   errfile=$(mktemp)
   while true; do
-    # Run inside an if so a caller's set -e cannot abort before we get to retry.
+    # Run inside an if so a caller's set -e cannot abort before we get to retry. stderr is teed into
+    # errfile so the rate-limit check can read it while the caller still sees it live.
+    local tee_pid=""
     if "$@" 2> >(tee "${errfile}" >&2); then
       exit_code=0
     else
       exit_code=$?
     fi
-    # Make sure tee has finished writing before we read the file.
-    wait $! 2>/dev/null || true
+    # Make sure tee has finished writing before we read the file. Under set -u, $! is unset when bash
+    # did not record the process substitution's pid, so guard it.
+    tee_pid="${!:-}"
+    if [[ -n "${tee_pid}" ]]; then
+      wait "${tee_pid}" 2>/dev/null || true
+    fi
     if [[ "${exit_code}" == "0" ]]; then
       rm -f "${errfile}"
       return 0
