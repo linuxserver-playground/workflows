@@ -412,7 +412,10 @@ jobs:
 
       - name: Emit build.json
         id: bundle
-        if: needs.prepare.result == 'success' && needs.arch.result == 'success'
+        # Also after a failed arch job: the record then says which tests failed and the control
+        # plane and PR comment get the data. Nothing is published or released in that case.
+        if: needs.prepare.result == 'success' && contains(fromJSON('["success","failure"]'), needs.arch.result)
+        continue-on-error: ${{ needs.arch.result != 'success' }}
         uses: ./.lsio-workflows/.github/actions/emit-bundle
         with:
           out_dir: out

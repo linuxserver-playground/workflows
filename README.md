@@ -1,7 +1,7 @@
 # workflows
 
 The shared GitHub Actions build system of the LinuxServer.io v2 playground. Every `docker-<name>`
-repository in `linuxserver-playground` carries a ~30 line generated `.github/workflows/build.yml` that
+repository in `linuxserver-playground` carries a short generated `.github/workflows/build.yml` that
 calls `image-build.yml` from this repo at `v1`; this repo holds everything the build does. It replaces the
 1,800-line Jenkinsfile and implements the contract in
 [`linuxserver-playground/builder/CONVENTIONS.md`](https://github.com/linuxserver-playground/builder/blob/main/CONVENTIONS.md)

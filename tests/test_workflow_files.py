@@ -76,7 +76,7 @@ def test_third_party_actions_pinned_by_major_and_listed_in_readme():
 
 def test_no_foreign_namespaces_or_services():
     for path in list(ROOT.glob(".github/**/*")) + list((ROOT / "scripts").iterdir()) + TEMPLATES:
-        if path.is_dir():
+        if path.is_dir() or "__pycache__" in path.parts or path.suffix in {".pyc", ".pyo"}:
             continue
         text = path.read_text(encoding="utf-8", errors="replace")
         for m in re.finditer(r"ghcr\.io/[\w./-]+", text):

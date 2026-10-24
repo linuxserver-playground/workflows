@@ -16,8 +16,9 @@ on:
         type: string
         default: ""
       pr_number:
+        description: Pull request number (defaults to the closing pull_request event's number)
         type: string
-        default: ${{ github.event.pull_request.number }}
+        default: ""
       workflows_ref:
         type: string
         default: v1
@@ -49,5 +50,5 @@ jobs:
           python3 .lsio-workflows/scripts/pr_cleanup.py --org "${org}" --package "${package}" --pr "${PR_NUMBER}"
         env:
           PACKAGE: ${{ inputs.package }}
-          PR_NUMBER: ${{ inputs.pr_number }}
+          PR_NUMBER: ${{ inputs.pr_number || github.event.pull_request.number }}
           GH_TOKEN: ${{ secrets.PACKAGES_TOKEN || github.token }}
