@@ -1,6 +1,13 @@
 #!/usr/bin/env bash
 # Build one architecture. Expects the buildx builder to be set up and, when pushing, docker to be
 # logged in to ghcr.io. Writes ${OUT_DIR}/arch.${ARCH}.json and ${OUT_DIR}/dockerfile.${ARCH}.
+#
+# When STAGING_REF is set the image is pushed there (ghcr.io/<owner>/build/<name>:<arch>-<sha7>-<run_id>)
+# instead of <image_path>:<arch_tag>, so nothing a consumer could pull is touched before the whole run
+# has succeeded; publish-manifest creates the released tags from the staging references. The staging
+# package is marked "Intermediate build artefact, not for use" through an *index annotation*, not an
+# image label: imagetools create copies the image config verbatim into the released repository, so a
+# label would follow it, while index annotations stay on the staging index.
 set -euo pipefail
 # shellcheck source=../../../scripts/lib.sh
 source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
@@ -8,6 +15,7 @@ source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
 : "${ARCH:?}" "${DOCKERFILE:?}" "${IMAGE_PATH:?}" "${ARCH_TAG:?}" "${NAME:?}" "${TITLE:?}" "${VERSION_LABEL:?}"
 : "${MODE:?}" "${BRANCH:?}" "${SHA:?}" "${UPSTREAM:?}" "${REPOSITORY:?}" "${BUILD_DATE:?}" "${OUT_DIR:?}"
 PUSH="${PUSH:-true}"
+STAGING_REF="${STAGING_REF:-}"
 FIRST_PARTY="${FIRST_PARTY:-true}"
 BUILD_ARGS="${BUILD_ARGS:-{\}}"
 DESCRIPTION="${DESCRIPTION:-${NAME} image by linuxserver.io}"
@@ -69,11 +77,17 @@ while IFS= read -r kv; do
   [[ -n "${kv}" ]] && args+=(--build-arg "${kv}")
 done < <(jq -r 'to_entries[] | "\(.key)=\(.value)"' <<< "${BUILD_ARGS}")
 
-remote_ref="${IMAGE_PATH}:${ARCH_TAG}"
+if [[ -n "${STAGING_REF}" ]]; then
+  remote_ref="${STAGING_REF}"
+  args+=(--annotation "index:org.opencontainers.image.description=Intermediate build artefact, not for use")
+else
+  remote_ref="${IMAGE_PATH}:${ARCH_TAG}"
+fi
+remote_repo="${remote_ref%:*}"
 local_ref="lsio-build/${NAME}:${ARCH_TAG}"
 meta="${work}/meta.json"
 
-group "docker buildx build ${ARCH} (push=${PUSH})"
+group "docker buildx build ${ARCH} (push=${PUSH}${STAGING_REF:+, staging})"
 start=${SECONDS}
 if [[ "${PUSH}" == "true" ]]; then
   retry_ghcr docker buildx build --no-cache --pull --platform "${platform}" -f "${built_dockerfile}" \
@@ -100,7 +114,7 @@ if [[ "${PUSH}" == "true" ]]; then
     goarch="${ARCH}"
     digest=$(jq -r --arg a "${goarch}" '[.manifests[] | select(.platform.architecture == $a and .platform.os == "linux")][0].digest // ""' <<< "${raw}")
     [[ -n "${digest}" ]] || die "no ${ARCH} manifest in the pushed index for ${remote_ref}"
-    manifest_json=$(retry_ghcr docker buildx imagetools inspect "${IMAGE_PATH}@${digest}" --raw)
+    manifest_json=$(retry_ghcr docker buildx imagetools inspect "${remote_repo}@${digest}" --raw)
   else
     digest=$(jq -r '.["containerimage.digest"] // ""' "${meta}")
     manifest_json="${raw}"
@@ -124,12 +138,12 @@ jq -n \
   --argjson uncompressed_size "${uncompressed_size}" --argjson layers "${layer_count}" \
   --arg runner "${RUNNER_LABEL:-unknown}" --argjson build_seconds "${build_seconds}" \
   --argjson pushed "$([[ "${PUSH}" == "true" ]] && echo true || echo false)" \
-  --arg image_ref "${image_ref}" --arg tag "${ARCH_TAG}" \
+  --arg image_ref "${image_ref}" --arg tag "${ARCH_TAG}" --arg staging_ref "${STAGING_REF}" \
   --arg base_image "${base_image}" --arg base_digest "${base_digest}" \
   --argjson labels "${labels_json}" --rawfile dockerfile "${built_dockerfile}" \
   '{arch:$arch, digest:$digest, size:$size, uncompressed_size:$uncompressed_size, layers:$layers, runner:$runner,
-    build_seconds:$build_seconds, pushed:$pushed, image_ref:$image_ref, tag:$tag, base_image:$base_image,
-    base_digest:$base_digest, labels:$labels, dockerfile:$dockerfile}' > "${OUT_DIR}/arch.${ARCH}.json"
+    build_seconds:$build_seconds, pushed:$pushed, image_ref:$image_ref, tag:$tag, staging_ref:$staging_ref,
+    base_image:$base_image, base_digest:$base_digest, labels:$labels, dockerfile:$dockerfile}' > "${OUT_DIR}/arch.${ARCH}.json"
 
 set_output digest "${digest}"
 set_output size "${size}"
@@ -138,4 +152,5 @@ set_output layers "${layer_count}"
 set_output image_ref "${image_ref}"
 set_output build_seconds "${build_seconds}"
 set_output base_digest "${base_digest}"
-summary "- \`${ARCH}\`: built \`${image_ref}\` in ${build_seconds}s, digest \`${digest}\`, base \`${base_ref}\`"
+set_output staging_ref "${STAGING_REF}"
+summary "- \`${ARCH}\`: built \`${image_ref}\`${STAGING_REF:+ (staging)} in ${build_seconds}s, digest \`${digest}\`, base \`${base_ref}\`"

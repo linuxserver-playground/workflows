@@ -125,3 +125,29 @@ def test_manifest_cli_writes_outputs(tmp_path, monkeypatch, capsys):
     assert "mode<<" in text and "\nlive\n" in text
     assert (tmp_path / "work" / "manifest.json").is_file()
     assert "manifest_path<<" in text
+
+
+# -------------------------------------------------------------------------------------------- staging references
+
+
+def test_staging_refs_are_mode_independent_and_per_run():
+    refs = tags.staging_refs("linuxserver-playground", "sonarr", "abc1234", 123456789, ["amd64", "arm64"])
+    assert refs == {
+        "amd64": "ghcr.io/linuxserver-playground/build/sonarr:amd64-abc1234-123456789",
+        "arm64": "ghcr.io/linuxserver-playground/build/sonarr:arm64-abc1234-123456789",
+    }
+    assert tags.staging_path("o", "x") == "ghcr.io/o/build/x"
+    # Two runs of the same commit never share a reference.
+    assert tags.staging_refs("o", "x", "abc1234", 1, ["amd64"]) != tags.staging_refs("o", "x", "abc1234", 2, ["amd64"])
+    with pytest.raises(ValueError):
+        tags.staging_refs("o", "x", "abc1234", "", ["amd64"])
+
+
+def test_tags_cli_adds_staging_refs(capsys):
+    assert tags.main(["--mode", "live", "--release-tag", "latest", "--upstream-clean", "1.2.3", "--ls-build", "4", "--sha", SHA, "--platforms", '["amd64","arm64"]', "--repository", "o/docker-example", "--name", "example", "--run-id", "77"]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["staging_path"] == "ghcr.io/o/build/example"
+    assert out["staging_refs"]["arm64"] == "ghcr.io/o/build/example:arm64-0123456-77"
+    # Without the run id the output keeps its old shape (callers of older action versions).
+    assert tags.main(["--mode", "live", "--release-tag", "latest", "--upstream-clean", "1.2.3", "--sha", SHA, "--platforms", '["amd64"]']) == 0
+    assert "staging_refs" not in json.loads(capsys.readouterr().out)

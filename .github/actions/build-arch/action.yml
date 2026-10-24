@@ -11,8 +11,11 @@ inputs:
     description: ghcr.io/<org>[/dev|/untrusted-pr]/<name>
     required: true
   arch_tag:
-    description: The arch-prefixed primary tag, e.g. amd64-4.0.20.3014-ls1
+    description: The arch-prefixed primary tag, e.g. amd64-4.0.20.3014-ls1 (the local tag, and the pushed one when staging_ref is empty)
     required: true
+  staging_ref:
+    description: Intermediate reference to push instead of <image_path>:<arch_tag> (ghcr.io/<owner>/build/<name>:<arch>-<sha7>-<run_id>); publish-manifest reads it
+    default: ""
   push:
     description: "true to push to the registry, false to docker save into out_dir"
     default: "true"
@@ -60,6 +63,7 @@ outputs:
   image_ref: { value: "${{ steps.build.outputs.image_ref }}" }
   build_seconds: { value: "${{ steps.build.outputs.build_seconds }}" }
   base_digest: { value: "${{ steps.build.outputs.base_digest }}" }
+  staging_ref: { value: "${{ steps.build.outputs.staging_ref }}" }
 
 runs:
   using: composite
@@ -73,6 +77,7 @@ runs:
         DOCKERFILE: ${{ inputs.dockerfile }}
         IMAGE_PATH: ${{ inputs.image_path }}
         ARCH_TAG: ${{ inputs.arch_tag }}
+        STAGING_REF: ${{ inputs.staging_ref }}
         PUSH: ${{ inputs.push }}
         NAME: ${{ inputs.name }}
         TITLE: ${{ inputs.title }}

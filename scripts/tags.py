@@ -6,6 +6,10 @@ The tag set for one build (CONVENTIONS §3 and §4).
 
 Returns the primary tag, every unprefixed tag, the arch-prefixed twins and the version label.
 Pure; used by the prepare job and unit-tested.
+
+``staging_refs`` names the intermediate references the arch jobs push to
+(``ghcr.io/<owner>/build/<name>:<arch>-<sha7>-<run_id>``). They are mode-independent, never consumed
+by anyone but ``publish-manifest`` in the same run, and deleted by ``cleanup-staging.yml``.
 """
 
 from __future__ import annotations
@@ -17,6 +21,7 @@ import sys
 from typing import Any
 
 ARCH_PREFIX = {"amd64": "amd64", "arm64": "arm64v8"}
+STAGING_NAMESPACE = "build"
 
 
 def sanitize_component(value: str) -> str:
@@ -71,6 +76,18 @@ def compute_tags(
     }
 
 
+def staging_path(owner: str, name: str) -> str:
+    return f"ghcr.io/{owner}/{STAGING_NAMESPACE}/{name}"
+
+
+def staging_refs(owner: str, name: str, sha7: str, run_id: int | str, platforms: list[str]) -> dict[str, str]:
+    """One staging reference per platform: <staging path>:<arch>-<sha7>-<run_id>."""
+    if not owner or not name or not sha7 or str(run_id) in ("", "0"):
+        raise ValueError("staging refs need owner, name, sha7 and a run id")
+    base = staging_path(owner, name)
+    return {arch: f"{base}:{arch}-{sha7}-{run_id}" for arch in platforms}
+
+
 def main(argv: list[str]) -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--mode", required=True, choices=["live", "dev", "pr"])
@@ -82,6 +99,9 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--sha", required=True)
     ap.add_argument("--pr-number", default="")
     ap.add_argument("--platforms", required=True, help="JSON array")
+    ap.add_argument("--repository", default="", help="owner/repo; with --name and --run-id adds the staging refs")
+    ap.add_argument("--name", default="", help="image name, for the staging refs")
+    ap.add_argument("--run-id", default="", help="workflow run id, for the staging refs")
     args = ap.parse_args(argv)
     out = compute_tags(
         args.mode,
@@ -94,6 +114,10 @@ def main(argv: list[str]) -> int:
         args.pr_number or None,
         json.loads(args.platforms),
     )
+    if args.repository and args.name and args.run_id:
+        owner = args.repository.split("/")[0]
+        out["staging_path"] = staging_path(owner, args.name)
+        out["staging_refs"] = staging_refs(owner, args.name, args.sha[:7], args.run_id, json.loads(args.platforms))
     print(json.dumps(out))
     return 0
 

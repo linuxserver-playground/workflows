@@ -1,38 +1,67 @@
 #!/usr/bin/env bash
 # docker buildx imagetools create: one index carrying every unprefixed tag, then each arch twin.
+#
+# Sources are the per-arch staging references the arch jobs pushed (SOURCES, a JSON object
+# arch -> ref under ghcr.io/<owner>/build/<name>). imagetools create can tag a manifest that lives in
+# another repository of the same registry, so the released tags only come into existence here, after
+# every build and test has passed. Without SOURCES the legacy layout is assumed: the arch jobs pushed
+# <image_path>:<arch prefix>-<primary tag> themselves.
 set -euo pipefail
 # shellcheck source=../../../scripts/lib.sh
 source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
 
 : "${IMAGE_PATH:?}" "${PRIMARY_TAG:?}" "${TAGS:?}" "${PLATFORMS:?}"
+SOURCES="${SOURCES:-}"
+DESCRIPTION="${DESCRIPTION:-}"
 
 mapfile -t tags < <(jq -r '.[]' <<< "${TAGS}")
 mapfile -t platforms < <(jq -r '.[]' <<< "${PLATFORMS}")
 (( ${#tags[@]} > 0 )) || die "no tags to publish"
 (( ${#platforms[@]} > 0 )) || die "no platforms"
 
+# source_for <arch>: the manifest the released tags of that platform are created from.
+declare -A source_for=()
+staged=false
+if [[ -n "${SOURCES}" && "${SOURCES}" != "{}" && "${SOURCES}" != "null" ]]; then
+  staged=true
+  for arch in "${platforms[@]}"; do
+    ref=$(jq -r --arg a "${arch}" '.[$a] // ""' <<< "${SOURCES}")
+    [[ -n "${ref}" ]] || die "no staging reference for ${arch} in SOURCES"
+    source_for["${arch}"]="${ref}"
+  done
+else
+  for arch in "${platforms[@]}"; do
+    source_for["${arch}"]="${IMAGE_PATH}:$(arch_prefix "${arch}")-${PRIMARY_TAG}"
+  done
+fi
+
 sources=()
-for arch in "${platforms[@]}"; do
-  sources+=("${IMAGE_PATH}:$(arch_prefix "${arch}")-${PRIMARY_TAG}")
-done
+for arch in "${platforms[@]}"; do sources+=("${source_for[${arch}]}"); done
+
+# The index annotation gives the GHCR package page its description; the image labels are untouched.
+annotation=()
+if [[ -n "${DESCRIPTION}" ]]; then
+  annotation=(--annotation "index:org.opencontainers.image.description=${DESCRIPTION}")
+fi
 
 group "Creating index ${IMAGE_PATH}:${PRIMARY_TAG} with ${#tags[@]} tags from ${sources[*]}"
 targets=()
 for t in "${tags[@]}"; do targets+=(-t "${IMAGE_PATH}:${t}"); done
-retry_ghcr docker buildx imagetools create "${targets[@]}" "${sources[@]}"
+retry_ghcr docker buildx imagetools create "${annotation[@]}" "${targets[@]}" "${sources[@]}"
 endgroup
 
 group "Creating arch twins"
 for arch in "${platforms[@]}"; do
   prefix=$(arch_prefix "${arch}")
-  src="${IMAGE_PATH}:${prefix}-${PRIMARY_TAG}"
+  src="${source_for[${arch}]}"
   twins=()
   for t in "${tags[@]}"; do
-    [[ "${t}" == "${PRIMARY_TAG}" ]] && continue
+    # In the legacy layout the arch primary already exists: it is the source itself.
+    [[ "${staged}" == "false" && "${t}" == "${PRIMARY_TAG}" ]] && continue
     twins+=(-t "${IMAGE_PATH}:${prefix}-${t}")
   done
   if (( ${#twins[@]} > 0 )); then
-    retry_ghcr docker buildx imagetools create "${twins[@]}" "${src}"
+    retry_ghcr docker buildx imagetools create "${annotation[@]}" "${twins[@]}" "${src}"
   fi
 done
 endgroup
@@ -51,6 +80,11 @@ set_output published "$(printf '%s\n' "${published[@]}" | jq -R . | jq -sc .)"
   echo "### Published"
   echo
   echo "Index digest \`${index_digest}\`"
+  if [[ "${staged}" == "true" ]]; then
+    echo
+    echo "From staging references (deleted by cleanup-staging after 7 days):"
+    for arch in "${platforms[@]}"; do echo "- \`${arch}\`: \`${source_for[${arch}]}\`"; done
+  fi
   echo
   for p in "${published[@]}"; do echo "- \`${p}\`"; done
 } >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"

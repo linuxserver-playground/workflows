@@ -1,0 +1,58 @@
+name: Cleanup staging
+
+# Delete old versions of the build/* staging packages: the per-arch intermediate images every run
+# pushes (ghcr.io/<owner>/build/<name>:<arch>-<sha7>-<run id>) before publish-manifest creates the
+# released tags from them. They are never used by consumers and are worthless once the run has ended.
+#
+# Deleting organisation package versions needs delete:packages, which GITHUB_TOKEN does not have, so
+# this runs with the PACKAGES_TOKEN organisation secret (held by the control plane's GitHub App
+# installation, or a fine-grained token with packages read and delete on the organisation). Without
+# it the job warns and does nothing.
+
+on:
+  workflow_dispatch:
+    inputs:
+      max_age_days:
+        description: Delete staging versions older than this many days
+        type: string
+        default: "7"
+      dry_run:
+        description: Only list what would be deleted
+        type: boolean
+        default: false
+  schedule:
+    - cron: "17 3 * * 1"
+
+permissions:
+  contents: read
+  packages: write
+
+jobs:
+  cleanup:
+    name: Delete old staging images
+    runs-on: ubuntu-24.04
+    env:
+      PACKAGES_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
+    steps:
+      - name: Check out
+        uses: actions/checkout@v5
+        with:
+          persist-credentials: false
+
+      - name: No token
+        if: env.PACKAGES_TOKEN == ''
+        run: |
+          echo "::warning::PACKAGES_TOKEN is not set; GITHUB_TOKEN cannot delete organisation package versions, so build/* staging images were not cleaned up"
+          echo "Skipped: no PACKAGES_TOKEN" >> "${GITHUB_STEP_SUMMARY}"
+
+      - name: Delete staging versions
+        if: env.PACKAGES_TOKEN != ''
+        run: |
+          set -euo pipefail
+          args=(--org "${GITHUB_REPOSITORY_OWNER}" --max-age-days "${MAX_AGE_DAYS:-7}")
+          [[ "${DRY_RUN}" == "true" ]] && args+=(--dry-run)
+          python3 scripts/cleanup_staging.py "${args[@]}" | tee -a "${GITHUB_STEP_SUMMARY}"
+        env:
+          GH_TOKEN: ${{ env.PACKAGES_TOKEN }}
+          MAX_AGE_DAYS: ${{ inputs.max_age_days }}
+          DRY_RUN: ${{ inputs.dry_run }}

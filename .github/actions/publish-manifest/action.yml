@@ -1,11 +1,11 @@
 name: publish-manifest
-description: Create the multi-platform indexes and arch twins for the whole tag set from the pushed per-arch images.
+description: Create the multi-platform indexes and arch twins for the whole tag set from the per-arch staging images.
 
 inputs:
   image_path:
     required: true
   primary_tag:
-    description: The unprefixed primary tag, already pushed as <arch>-<primary_tag> per platform
+    description: The unprefixed primary tag
     required: true
   tags:
     description: JSON array of every unprefixed tag to publish (includes the primary tag)
@@ -13,6 +13,12 @@ inputs:
   platforms:
     description: JSON array of platforms (amd64, arm64)
     required: true
+  sources:
+    description: JSON object arch -> staging reference pushed by build-arch; empty means the arch jobs pushed <image_path>:<arch prefix>-<primary_tag> themselves
+    default: ""
+  description:
+    description: org.opencontainers.image.description set as an index annotation so the GHCR package page shows it
+    default: ""
 
 outputs:
   index_digest: { value: "${{ steps.publish.outputs.index_digest }}" }
@@ -30,3 +36,5 @@ runs:
         PRIMARY_TAG: ${{ inputs.primary_tag }}
         TAGS: ${{ inputs.tags }}
         PLATFORMS: ${{ inputs.platforms }}
+        SOURCES: ${{ inputs.sources }}
+        DESCRIPTION: ${{ inputs.description }}
