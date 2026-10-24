@@ -164,6 +164,23 @@ def test_release_body_defaults_and_truncation():
     assert "No test report." in body and "No changes" in body and "_(truncated)_" in body
 
 
+def test_release_notes_compose_cli_end_to_end(tmp_path, capsys):
+    """The CLI path release.sh uses, with the files it writes: a regression for the status_url keyword
+    that was passed to dict.get() and broke every live release with a TypeError."""
+    (tmp_path / "linuxserver.md").write_text("## What's Changed\n* Add krb5-libs by @a in #1\n", encoding="utf-8")
+    (tmp_path / "upstream.json").write_text(json.dumps({"text": "Fixed stuff", "url": "https://github.com/o/r/releases/tag/v1"}), encoding="utf-8")
+    rc = release_notes.main(["compose", "--ci-url", "https://hub/builds/example/v1-ls1/", "--status-url", "https://control/builds/o/r/42", "--linuxserver-notes", str(tmp_path / "linuxserver.md"), "--upstream-notes", str(tmp_path / "upstream.json"), "--notes-out", str(tmp_path / "notes.json")])
+    assert rc == 0
+    body = capsys.readouterr().out
+    assert body.index("## CI") < body.index("## LinuxServer changes") < body.index("## Upstream changes")
+    assert "https://hub/builds/example/v1-ls1/" in body and "[Build status](https://control/builds/o/r/42)" in body
+    assert "* Add krb5-libs" in body and body.rstrip().endswith("Fixed stuff")
+    assert json.loads((tmp_path / "notes.json").read_text()) == {"linuxserver": release_notes.clean_generated_notes("## What's Changed\n* Add krb5-libs by @a in #1\n"), "upstream": "Fixed stuff", "upstream_url": "https://github.com/o/r/releases/tag/v1"}
+    # Without a status url (no control plane) the same call still composes.
+    assert release_notes.main(["compose", "--linuxserver-notes", str(tmp_path / "linuxserver.md"), "--upstream-notes", str(tmp_path / "upstream.json")]) == 0
+    assert "## Upstream changes" in capsys.readouterr().out
+
+
 def test_patch_bundle_adds_notes_and_urls(tmp_path):
     bundle = {"assets": [{"name": "build.json", "size": 1, "sha256": "0" * 64}, {"name": "test.amd64.json", "size": 2, "sha256": "1" * 64}]}
     out = release_notes.patch_bundle(bundle, {"linuxserver": "ls", "upstream": "up", "upstream_url": "https://u"}, "https://github.com/o/r/releases/download/v1-ls1/")

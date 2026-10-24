@@ -90,7 +90,7 @@ def main(argv: list[str]) -> int:
     if args.cmd == "compose":
         ls = Path(args.linuxserver_notes).read_text(encoding="utf-8")
         up = json.loads(Path(args.upstream_notes).read_text(encoding="utf-8"))
-        body = compose(args.ci_url, ls, up.get("text", "", status_url=args.status_url), up.get("url", ""))
+        body = compose(args.ci_url, ls, up.get("text", ""), up.get("url", ""), status_url=args.status_url)
         if args.notes_out:
             Path(args.notes_out).write_text(json.dumps({"linuxserver": clean_generated_notes(ls), "upstream": up.get("text", ""), "upstream_url": up.get("url", "")}), encoding="utf-8")
         sys.stdout.write(body)
