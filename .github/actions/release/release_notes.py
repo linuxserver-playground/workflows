@@ -25,14 +25,24 @@ def clean_generated_notes(text: str) -> str:
     return text.strip() or "No changes"
 
 
-def compose(ci_url: str, linuxserver_notes: str, upstream_notes: str, upstream_url: str) -> str:
+def ci_section(report_url: str, status_url: str) -> str:
+    """Hub page with the rendered results first, control plane live status second (CONVENTIONS §10)."""
+    links = []
+    if report_url:
+        links.append(f"[Test report]({report_url})")
+    if status_url:
+        links.append(f"[Build status]({status_url})")
+    return " · ".join(links) if links else "No test report."
+
+
+def compose(ci_url: str, linuxserver_notes: str, upstream_notes: str, upstream_url: str, status_url: str = "") -> str:
     upstream = upstream_notes.strip()
     if len(upstream) > MAX_UPSTREAM_CHARS:
         upstream = upstream[:MAX_UPSTREAM_CHARS].rstrip() + "\n\n_(truncated)_"
     parts = [
         "## CI",
         "",
-        f"[Test report]({ci_url})" if ci_url else "No test report.",
+        ci_section(ci_url, status_url),
         "",
         "## LinuxServer changes",
         "",
@@ -67,6 +77,7 @@ def main(argv: list[str]) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
     c = sub.add_parser("compose")
     c.add_argument("--ci-url", default="")
+    c.add_argument("--status-url", default="")
     c.add_argument("--linuxserver-notes", required=True)
     c.add_argument("--upstream-notes", required=True, help="JSON file {text, url} from upstream_notes.py")
     c.add_argument("--notes-out", default="", help="write {linuxserver, upstream, upstream_url} JSON here")
@@ -79,7 +90,7 @@ def main(argv: list[str]) -> int:
     if args.cmd == "compose":
         ls = Path(args.linuxserver_notes).read_text(encoding="utf-8")
         up = json.loads(Path(args.upstream_notes).read_text(encoding="utf-8"))
-        body = compose(args.ci_url, ls, up.get("text", ""), up.get("url", ""))
+        body = compose(args.ci_url, ls, up.get("text", "", status_url=args.status_url), up.get("url", ""))
         if args.notes_out:
             Path(args.notes_out).write_text(json.dumps({"linuxserver": clean_generated_notes(ls), "upstream": up.get("text", ""), "upstream_url": up.get("url", "")}), encoding="utf-8")
         sys.stdout.write(body)

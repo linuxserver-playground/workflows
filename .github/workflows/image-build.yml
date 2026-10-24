@@ -425,6 +425,7 @@ jobs:
           ci_image: ${{ inputs.ci_image }}
           index_digest: ${{ steps.manifest.outputs.index_digest }}
           control_url: ${{ secrets.CONTROL_URL }}
+          hub_url: ${{ vars.HUB_URL }}
           builder_ref: ${{ inputs.builder_ref }}
 
       - name: Release (live)
@@ -442,6 +443,8 @@ jobs:
           manifest: ${{ runner.temp }}/image.json
           upstream: ${{ needs.prepare.outputs.upstream }}
           control_url: ${{ secrets.CONTROL_URL }}
+          hub_url: ${{ vars.HUB_URL }}
+          image_name: ${{ needs.prepare.outputs.name }}
 
       - name: Upload bundle
         id: artifact

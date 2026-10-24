@@ -10,6 +10,7 @@ PRERELEASE="${PRERELEASE:-false}"
 PREVIOUS_TAG="${PREVIOUS_TAG:-}"
 HEAD_ALREADY_RELEASED="${HEAD_ALREADY_RELEASED:-false}"
 CONTROL_URL="${CONTROL_URL:-}"
+IMAGE_NAME="${IMAGE_NAME:?}"
 RUN_URL="${RUN_URL:-}"
 work="${RUNNER_TEMP:-/tmp}/lsio-release"
 mkdir -p "${work}"
@@ -45,15 +46,20 @@ if ! python3 "${scripts}/upstream_notes.py" "${MANIFEST}" "${UPSTREAM}" > "${wor
 fi
 endgroup
 
-# ---- Section 1: CI link ----
-if [[ -n "${CONTROL_URL}" ]]; then
-  ci_url="${CONTROL_URL%/}/builds/${REPOSITORY}/${GITHUB_RUN_ID:-0}"
+# ---- Section 1: CI links: hub results page (rendered from this release's assets), control live status ----
+if [[ -n "${HUB_URL:-}" ]]; then
+  ci_url="${HUB_URL%/}/builds/${IMAGE_NAME}/${TAG}/"
 else
-  ci_url="${RUN_URL}"
+  ci_url=""
+fi
+if [[ -n "${CONTROL_URL}" ]]; then
+  status_url="${CONTROL_URL%/}/builds/${REPOSITORY}/${GITHUB_RUN_ID:-0}"
+else
+  status_url="${RUN_URL}"
 fi
 
 python3 "${GITHUB_ACTION_PATH}/release_notes.py" compose \
-  --ci-url "${ci_url}" --linuxserver-notes "${work}/linuxserver.md" \
+  --ci-url "${ci_url}" --status-url "${status_url}" --linuxserver-notes "${work}/linuxserver.md" \
   --upstream-notes "${work}/upstream.json" --notes-out "${work}/notes.json" > "${work}/body.md"
 
 # ---- Patch build.json with notes and asset URLs, re-validate ----

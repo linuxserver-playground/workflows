@@ -117,7 +117,7 @@ def _int(value: Any, default: int = 0) -> int:
         return default
 
 
-def build_bundle(prepare: dict[str, Any], out: Path, *, repository: str, run_id: int, run_url: str, workflows_ref: str, ci_image: str, reason: str, index_digest: str = "", control_url: str = "", created: str | None = None) -> dict[str, Any]:
+def build_bundle(prepare: dict[str, Any], out: Path, *, repository: str, run_id: int, run_url: str, workflows_ref: str, ci_image: str, reason: str, index_digest: str = "", control_url: str = "", hub_url: str = "", created: str | None = None) -> dict[str, Any]:
     mode = prepare["mode"]
     platforms = json.loads(prepare["platforms"]) if isinstance(prepare.get("platforms"), str) else list(prepare.get("platforms") or [])
     arch_info = {a: _load_json(out / f"arch.{a}.json") or {} for a in platforms}
@@ -147,7 +147,11 @@ def build_bundle(prepare: dict[str, Any], out: Path, *, repository: str, run_id:
     test_block: dict[str, Any] = {"enabled": test_enabled, "success": test_success}
     if per_arch:
         test_block["per_arch"] = per_arch
-    if control_url:
+    # Results are rendered by the hub from the Release assets (CONVENTIONS §10): live builds get the
+    # deterministic hub page; dev and pr builds have no release, so they link to the control plane's run page.
+    if mode == "live" and hub_url:
+        test_block["report_url"] = f"{hub_url.rstrip('/')}/builds/{prepare['name']}/{prepare['primary_tag']}/"
+    elif control_url:
         test_block["report_url"] = f"{control_url.rstrip('/')}/builds/{repository}/{run_id}"
 
     assets = []
@@ -257,12 +261,13 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--reason", default="push")
     ap.add_argument("--index-digest", default="")
     ap.add_argument("--control-url", default="")
+    ap.add_argument("--hub-url", default="")
     ap.add_argument("--output", default="", help="where to write build.json (default: <out>/build.json)")
     args = ap.parse_args(argv)
 
     out = Path(args.out)
     prepare = json.loads(Path(args.prepare).read_text(encoding="utf-8"))
-    bundle = build_bundle(prepare, out, repository=args.repository, run_id=args.run_id, run_url=args.run_url, workflows_ref=args.workflows_ref, ci_image=args.ci_image, reason=args.reason, index_digest=args.index_digest, control_url=args.control_url)
+    bundle = build_bundle(prepare, out, repository=args.repository, run_id=args.run_id, run_url=args.run_url, workflows_ref=args.workflows_ref, ci_image=args.ci_image, reason=args.reason, index_digest=args.index_digest, control_url=args.control_url, hub_url=args.hub_url)
     target = Path(args.output) if args.output else out / "build.json"
     target.write_text(json.dumps(bundle, indent=2, sort_keys=False) + "\n", encoding="utf-8")
     problems = validate(bundle)
