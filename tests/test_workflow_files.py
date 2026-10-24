@@ -55,7 +55,7 @@ def test_image_build_contract():
     assert arch["runs-on"] == "${{ matrix.runner }}"
     publish = wf["jobs"]["publish"]
     assert publish["if"] == "${{ always() && !(" + CLOSED_PR + ") }}"
-    assert publish["permissions"] == {"contents": "write", "packages": "write", "pull-requests": "write", "id-token": "write", "attestations": "write"}
+    assert publish["permissions"] == {"contents": "write", "actions": "write", "packages": "write", "pull-requests": "write", "id-token": "write", "attestations": "write"}
     used = {s.get("uses", "") for job in wf["jobs"].values() for s in job["steps"]}
     for a in EXPECTED_ACTIONS:
         assert any(u.endswith(f"/.github/actions/{a}") for u in used), a
