@@ -6,6 +6,10 @@ Delete every version of an organisation container package tagged for a pull requ
 
 Matching tags: ``pr-<n>-*`` (image builds) and ``*-pr-<n>`` (mod builds). Uses ``gh api`` with
 GH_TOKEN. ``select_versions`` is pure and unit-tested.
+
+Exit codes: 0 when nothing was left to delete, 2 when at least one version could not be deleted (the
+caller may retry with a token that has delete:packages on the organisation). Listing failures are
+warnings and exit 0: a missing package means there is nothing to clean.
 """
 
 from __future__ import annotations
@@ -75,6 +79,7 @@ def main(argv: list[str]) -> int:
             print(f"::warning::could not delete version {v['id']} ({tags}): {exc}")
     if failures:
         print("::warning::some versions were not deleted; the token needs delete:packages on the organisation")
+        return 2
     return 0
 
 

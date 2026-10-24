@@ -7,6 +7,7 @@ on:
     branches: ["**"]
     tags-ignore: ["**"]
   pull_request:
+    types: [opened, synchronize, reopened, closed]
   workflow_dispatch:
     inputs:
       reason:
