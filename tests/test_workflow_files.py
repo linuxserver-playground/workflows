@@ -47,9 +47,9 @@ def test_image_build_contract():
     assert inputs["reason"]["default"] == "push"
     assert inputs["workflows_ref"]["default"] == "v1"
     assert inputs["ci_image"]["default"] == "ghcr.io/linuxserver-playground/ci:latest"
-    assert set(wf[True]["workflow_call"]["secrets"]) == {"CONTROL_URL", "CONTROL_EVENTS_SECRET", "PACKAGES_TOKEN"}
+    assert set(wf[True]["workflow_call"]["secrets"]) == {"CONTROL_URL", "CONTROL_EVENTS_SECRET"}
     assert all(not v.get("required") for v in wf[True]["workflow_call"]["secrets"].values())
-    assert list(wf["jobs"]) == ["prepare", "arch", "publish", "cleanup"]
+    assert list(wf["jobs"]) == ["prepare", "arch", "publish"]
     arch = wf["jobs"]["arch"]
     assert arch["strategy"]["fail-fast"] is False
     assert arch["runs-on"] == "${{ matrix.runner }}"
@@ -94,18 +94,37 @@ def test_package_check_is_a_check_not_a_release():
     assert "steps.outcome.outputs.result != 'skipped'" in publish["Fail if any job failed"]["if"]
 
 
-def test_closed_pull_request_runs_only_cleanup():
-    wf = load(ROOT / ".github" / "workflows" / "image-build.yml")
+def test_pull_requests_are_reported_by_the_trusted_half():
+    build = load(ROOT / ".github" / "workflows" / "image-build.yml")
     for job in ("prepare", "arch"):
-        assert wf["jobs"][job]["if"] == "${{ !(" + CLOSED_PR + ") }}"
-    cleanup = wf["jobs"]["cleanup"]
-    assert cleanup["if"] == CLOSED_PR
-    assert cleanup["permissions"]["packages"] == "write"
-    run = _steps(wf, "cleanup")["Delete package versions"]["run"]
-    assert "pr_cleanup.py" in run and "PACKAGES_TOKEN" in run and 'untrusted-pr/' in run
-    assert not (ROOT / ".github" / "workflows" / "pr-cleanup.yml").exists()
+        assert build["jobs"][job]["if"] == "${{ !(" + CLOSED_PR + ") }}"
+    # The build of a pull request never posts to it and never deletes images: that is pr-report.yml.
+    assert "cleanup" not in build["jobs"]
+    assert "Comment on pull request" not in _steps(build, "publish")
+    assert "pull_request_target" not in (ROOT / ".github" / "workflows" / "image-build.yml").read_text()
     tpl = load(ROOT / "templates" / "build.yml")
-    assert tpl[True]["pull_request"] == {"types": ["opened", "synchronize", "reopened", "closed"]}
+    assert tpl[True]["pull_request"] == {"types": ["opened", "synchronize", "reopened"]}
+
+    report = load(ROOT / ".github" / "workflows" / "pr-report.yml")
+    text = (ROOT / ".github" / "workflows" / "pr-report.yml").read_text()
+    caller = load(ROOT / "templates" / "pr-report.yml")
+    assert caller[True] == {"workflow_run": {"workflows": ["Build"], "types": ["completed"]}, "pull_request_target": {"types": ["labeled", "synchronize", "closed"]}}
+    assert caller["permissions"] == {} and caller["jobs"]["report"]["secrets"] == "inherit"
+    # Trusted by construction: the only checkouts are the shared workflows and, for cleanup, the base commit.
+    for job_name, job in report["jobs"].items():
+        for step in job["steps"]:
+            if "actions/checkout" in str(step.get("uses", "")):
+                ref = step["with"]["ref"]
+                assert ref in ("${{ inputs.workflows_ref }}", "${{ github.event.pull_request.base.sha }}"), (job_name, ref)
+    assert "head.sha }}" not in text.replace("github.event.pull_request.head.sha }}", "")  # only the concurrency group
+    assert "github.event.pull_request.head.ref" not in text and "github.event.pull_request.title" not in text
+    cleanup = report["jobs"]["cleanup"]
+    assert cleanup["if"] == "github.event_name == 'pull_request_target' && github.event.action == 'closed'"
+    assert "pr_cleanup.py" in _steps(report, "cleanup")["Delete package versions"]["run"]
+    steps = _steps(report, "report")
+    assert steps["publish"]["if"] == "steps.pr.outputs.publish == 'true'"
+    assert steps["Post the report"]["env"]["ATTACHMENTS_TOKEN"] == "${{ secrets.ATTACHMENTS_TOKEN }}"
+    assert "safe-to-publish" in report["jobs"]["unlabel"]["if"] and "synchronize" in report["jobs"]["unlabel"]["if"]
 
 
 def test_cleanup_staging_workflow():

@@ -4,7 +4,7 @@ Delete every version of an organisation container package tagged for a pull requ
 
     pr_cleanup.py --org linuxserver-playground --package untrusted-pr/sonarr --pr 12 [--dry-run]
 
-Matching tags: ``pr-<n>-*`` (image builds) and ``*-pr-<n>`` (mod builds). Uses ``gh api`` with
+Matching tags: ``pr-<n>-*`` and its arch twins ``<prefix>-pr-<n>-*`` (image builds), ``*-pr-<n>`` (mod builds). Uses ``gh api`` with
 GH_TOKEN. ``select_versions`` is pure and unit-tested.
 
 Exit codes: 0 when nothing was left to delete, 2 when at least one version could not be deleted (the
@@ -24,7 +24,8 @@ from typing import Any
 
 
 def tag_matches(tag: str, pr: int) -> bool:
-    return bool(re.match(rf"^pr-{pr}-", tag)) or bool(re.search(rf"-pr-{pr}$", tag))
+    """pr-<n>-<sha> and its arch twins <prefix>-pr-<n>-<sha> (image builds), *-pr-<n> (mod builds)."""
+    return bool(re.match(rf"^(?:[a-z0-9]+-)?pr-{pr}-", tag)) or bool(re.search(rf"-pr-{pr}$", tag))
 
 
 def select_versions(versions: list[dict[str, Any]], pr: int) -> list[dict[str, Any]]:

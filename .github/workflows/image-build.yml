@@ -8,7 +8,8 @@ name: Image build
 # publish job creates the released tags from them, so a failing run never overwrites a released tag.
 # reason=packages on a live branch is a check, not a release: it compares the fresh package table with
 # the committed package_versions.txt and commits the new one when it changed; that push starts the
-# release build. A closed pull request runs only the cleanup job, which deletes its untrusted-pr images.
+# release build. The pull request report, publishing a fork's image and deleting a closed pull request's
+# images are the trusted half, pr-report.yml: nothing here posts to pull requests.
 
 on:
   workflow_call:
@@ -37,9 +38,6 @@ on:
       CONTROL_URL:
         required: false
       CONTROL_EVENTS_SECRET:
-        required: false
-      PACKAGES_TOKEN:
-        description: Token with delete:packages on the organisation, used when GITHUB_TOKEN may not delete the untrusted-pr versions of a closed pull request
         required: false
 
 env:
@@ -542,20 +540,6 @@ jobs:
             !out/image.*.tar.gz
           retention-days: ${{ env.MODE == 'live' && 90 || 30 }}
 
-      - name: Comment on pull request
-        if: always() && env.MODE == 'pr' && needs.prepare.result == 'success'
-        run: |
-          python3 "${WORKFLOWS_PATH}/scripts/pr_comment.py" \
-            --repository "${GITHUB_REPOSITORY}" --pr "${PR_NUMBER}" --bundle out/build.json \
-            --image-path "${IMAGE_PATH}" --primary-tag "${PRIMARY_TAG}" --pushed "${PUSH}" \
-            --run-url "${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}" \
-            --artifact-name bundle
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PR_NUMBER: ${{ needs.prepare.outputs.pr_number }}
-          IMAGE_PATH: ${{ needs.prepare.outputs.image_path }}
-          PRIMARY_TAG: ${{ needs.prepare.outputs.primary_tag }}
-
       - name: Notify control plane
         if: always()
         uses: ./.lsio-workflows/.github/actions/notify-control
@@ -620,56 +604,3 @@ jobs:
         env:
           RESULT: ${{ steps.outcome.outputs.result }}
           FAILED_JOB: ${{ steps.outcome.outputs.failed_job }}
-
-  cleanup:
-    name: Delete PR images
-    # A closed pull request: delete every untrusted-pr/<name> version tagged pr-<number>-* (the index
-    # and the arch twins). GITHUB_TOKEN with packages: write can delete versions of a package linked to
-    # this repository; when the registry refuses, PACKAGES_TOKEN (delete:packages on the organisation)
-    # is tried, and without one the job warns and leaves the images to the control plane.
-    if: github.event_name == 'pull_request' && github.event.action == 'closed'
-    runs-on: ubuntu-24.04
-    permissions:
-      contents: read
-      packages: write
-    steps:
-      - name: Check out repository (base branch)
-        uses: actions/checkout@v5
-        with:
-          ref: ${{ github.event.pull_request.base.sha }}
-          path: repo
-          persist-credentials: false
-
-      - name: Check out shared workflows
-        uses: actions/checkout@v5
-        with:
-          repository: ${{ env.WORKFLOWS_REPOSITORY }}
-          ref: ${{ inputs.workflows_ref }}
-          path: ${{ env.WORKFLOWS_PATH }}
-          persist-credentials: false
-
-      - name: Delete package versions
-        run: |
-          set -euo pipefail
-          org="${GITHUB_REPOSITORY%%/*}"
-          repo="${GITHUB_REPOSITORY#*/}"
-          name=$(sed -nE 's/^name:[[:space:]]*"?([A-Za-z0-9._-]+)"?[[:space:]]*(#.*)?$/\1/p' repo/image.yml 2>/dev/null | head -1 || true)
-          package="untrusted-pr/${name:-${repo#docker-}}"
-          echo "Deleting versions of ${package} tagged pr-${PR_NUMBER}-*"
-          rc=0
-          python3 "${WORKFLOWS_PATH}/scripts/pr_cleanup.py" --org "${org}" --package "${package}" --pr "${PR_NUMBER}" || rc=$?
-          if [[ "${rc}" == "2" ]]; then
-            if [[ -n "${PACKAGES_TOKEN}" ]]; then
-              echo "GITHUB_TOKEN could not delete every version; retrying with PACKAGES_TOKEN"
-              GH_TOKEN="${PACKAGES_TOKEN}" python3 "${WORKFLOWS_PATH}/scripts/pr_cleanup.py" --org "${org}" --package "${package}" --pr "${PR_NUMBER}" || rc=$?
-              [[ "${rc}" == "2" ]] && echo "::warning::some ${package} versions of PR #${PR_NUMBER} could not be deleted with PACKAGES_TOKEN either"
-            else
-              echo "::warning::GITHUB_TOKEN could not delete every ${package} version of PR #${PR_NUMBER} and PACKAGES_TOKEN is not set; the control plane must remove them"
-            fi
-          elif [[ "${rc}" != "0" ]]; then
-            exit "${rc}"
-          fi
-        env:
-          GH_TOKEN: ${{ github.token }}
-          PACKAGES_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
-          PR_NUMBER: ${{ github.event.pull_request.number }}

@@ -1,4 +1,4 @@
-"""emit_bundle, release_notes, notify, pr_comment and pr_cleanup."""
+"""emit_bundle, release_notes, notify and pr_cleanup."""
 
 from __future__ import annotations
 
@@ -13,7 +13,6 @@ import pytest
 import emit_bundle
 import notify
 import pr_cleanup
-import pr_comment
 import release_notes
 
 try:
@@ -235,19 +234,6 @@ def test_notify_posts_signed_body(monkeypatch, tmp_path):
 # -------------------------------------------------------------------------------------------- pr comment / cleanup
 
 
-def test_pr_comment_compose(tmp_path):
-    out = tmp_path / "out"
-    write_out_dir(out)
-    bundle = emit_bundle.build_bundle(prepare_outputs("pr"), out, repository="o/r", run_id=1, run_url="https://x/1", workflows_ref="v1", ci_image="ci", reason="push")
-    body = pr_comment.compose(bundle, "ghcr.io/o/untrusted-pr/example", "pr-12-0123456", True, "https://x/1", "bundle")
-    assert body.startswith(pr_comment.MARKER)
-    assert "docker pull ghcr.io/o/untrusted-pr/example:pr-12-0123456" in body
-    assert "unreviewed pull request build" in body
-    assert "| amd64 | `sha256:aaaaaaaaaaaa` | 0.0 MiB | 3 | pass |" in body
-    fork = pr_comment.compose(bundle, "ghcr.io/o/untrusted-pr/example", "pr-12-0123456", False, "https://x/1", "bundle")
-    assert "comes from a fork" in fork and "docker pull" not in fork
-
-
 def test_pr_cleanup_selects_versions():
     versions = [
         {"id": 1, "metadata": {"container": {"tags": ["pr-12-abc1234", "amd64-pr-12-abc1234"]}}},
@@ -255,5 +241,7 @@ def test_pr_cleanup_selects_versions():
         {"id": 3, "metadata": {"container": {"tags": ["universal-foo-pr-12"]}}},
         {"id": 4, "metadata": {"container": {"tags": []}}},
         {"id": 5, "metadata": {"container": {"tags": ["latest"]}}},
+        {"id": 6, "metadata": {"container": {"tags": ["arm64v8-pr-12-abc1234"]}}},
+        {"id": 7, "metadata": {"container": {"tags": ["arm64v8-pr-120-abc1234"]}}},
     ]
-    assert [v["id"] for v in pr_cleanup.select_versions(versions, 12)] == [1, 3]
+    assert [v["id"] for v in pr_cleanup.select_versions(versions, 12)] == [1, 3, 6]

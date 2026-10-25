@@ -27,7 +27,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 cmd="${1:?render|check}"
 builder_image="${2:-}"
 branch="${3:-}"
-GENERATED_FILES=(README.md AGENTS.md LICENSE .github/workflows/build.yml)
+GENERATED_FILES=(README.md AGENTS.md LICENSE .github/workflows/build.yml .github/workflows/pr-report.yml)
 COMMIT_SUBJECT="Update generated files [skip ci]"
 head_sha=$(git rev-parse HEAD)
 
@@ -106,13 +106,15 @@ commit_and_push() {
 # shellcheck disable=SC2086
 if commit_and_push ${changed}; then
   :
-elif grep -q '.github/workflows/build.yml' <<< "${changed}"; then
+elif grep -q '^.github/workflows/' <<< "${changed}"; then
   # GITHUB_TOKEN may not update workflow files (it lacks the 'workflows' permission). Commit the
-  # rest and leave the workflow for the control plane's GitHub App to update.
-  warn "could not push .github/workflows/build.yml with GITHUB_TOKEN; committing the other generated files only. The control plane must update the workflow file."
+  # rest and leave the workflows for the control plane's GitHub App to update.
+  workflows=$(grep '^.github/workflows/' <<< "${changed}")
+  warn "could not push $(paste -sd, - <<< "${workflows}") with GITHUB_TOKEN; committing the other generated files only. The control plane must update the workflow files."
   git reset --quiet --soft "${head_sha}"
-  git restore --staged --worktree -- .github/workflows/build.yml
-  rest=$(grep -v '.github/workflows/build.yml' <<< "${changed}" || true)
+  # shellcheck disable=SC2086
+  git restore --staged --worktree -- ${workflows}
+  rest=$(grep -v '^.github/workflows/' <<< "${changed}" || true)
   if [[ -n "${rest}" ]]; then
     # shellcheck disable=SC2086
     commit_and_push ${rest}

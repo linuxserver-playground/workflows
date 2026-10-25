@@ -1,0 +1,201 @@
+name: PR report
+
+# The trusted half of pull request builds. Each image repository's generated pr-report.yml calls this on
+# workflow_run (its Build finished) and pull_request_target (labeled, synchronize, closed). Both events run the
+# base repository's workflow with its secrets and a write token, so no job here checks out, builds or runs
+# anything from the pull request: the Build run's artifacts are downloaded and read as data (scripts/pr_report.py
+# caps, validates and escapes them). The Build of a fork pull request runs with a read-only token and no secrets;
+# this is where its report is posted and, once a maintainer adds the safe-to-publish label, its image published.
+
+on:
+  workflow_call:
+    inputs:
+      workflows_ref:
+        description: Ref of linuxserver-playground/workflows for the scripts (the caller pins the same one)
+        type: string
+        default: v1
+    secrets:
+      ATTACHMENTS_TOKEN:
+        description: A user token for uploading screenshots as comment attachments (the workflow token cannot); without it the comment links the artifact
+        required: false
+      PACKAGES_TOKEN:
+        description: Token with delete:packages on the organisation, used when GITHUB_TOKEN may not delete the untrusted-pr versions of a closed pull request
+        required: false
+
+env:
+  WORKFLOWS_REPOSITORY: linuxserver-playground/workflows
+  WORKFLOWS_PATH: .lsio-workflows
+  APPROVAL_LABEL: safe-to-publish
+
+jobs:
+  report:
+    name: Report
+    if: >-
+      (github.event_name == 'workflow_run' && github.event.workflow_run.event == 'pull_request') ||
+      (github.event_name == 'pull_request_target' && github.event.action == 'labeled' && github.event.label.name == 'safe-to-publish')
+    runs-on: ubuntu-24.04
+    permissions:
+      actions: read
+      contents: read
+      issues: write
+      pull-requests: write
+      packages: write
+    # A finished build and an approval for the same commit must not both publish at once.
+    concurrency:
+      group: pr-report-${{ github.repository }}-${{ github.event.workflow_run.head_sha || github.event.pull_request.head.sha }}
+      cancel-in-progress: false
+    steps:
+      - name: Check out shared workflows
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.WORKFLOWS_REPOSITORY }}
+          ref: ${{ inputs.workflows_ref }}
+          path: ${{ env.WORKFLOWS_PATH }}
+          persist-credentials: false
+
+      - name: Resolve the pull request and its build
+        id: pr
+        run: python3 "${WORKFLOWS_PATH}/scripts/pr_report.py" resolve
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Download the build's data
+        if: steps.pr.outputs.action == 'report'
+        run: |
+          set -euo pipefail
+          mkdir -p bundle images
+          gh run download "${RUN_ID}" --repo "${GITHUB_REPOSITORY}" --name bundle --dir bundle \
+            || echo "::warning::run ${RUN_ID} left no bundle artifact; the report says what it can"
+          if [[ "${PUBLISH}" == "true" ]]; then
+            for arch in amd64 arm64; do
+              gh run download "${RUN_ID}" --repo "${GITHUB_REPOSITORY}" --name "image-${arch}" --dir "images/${arch}" \
+                || echo "no image-${arch} artifact"
+            done
+          fi
+          ls -la bundle images
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RUN_ID: ${{ steps.pr.outputs.run_id }}
+          PUBLISH: ${{ steps.pr.outputs.publish }}
+
+      - name: Log in to GHCR
+        if: steps.pr.outputs.action == 'report'
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ github.token }}
+
+      - name: Set up buildx
+        if: steps.pr.outputs.publish == 'true'
+        uses: docker/setup-buildx-action@v3
+
+      - name: Ensure the approval label exists
+        if: steps.pr.outputs.fork == 'true'
+        run: |
+          gh label create "${APPROVAL_LABEL}" --repo "${GITHUB_REPOSITORY}" --color 0E8A16 \
+            --description "A maintainer reviewed this fork pull request; its build image may be published to untrusted-pr" \
+            2>/dev/null || true
+        env:
+          GH_TOKEN: ${{ github.token }}
+
+      - name: Publish the fork's image (approved)
+        id: publish
+        if: steps.pr.outputs.publish == 'true'
+        run: bash "${WORKFLOWS_PATH}/scripts/publish_pr_image.sh"
+        env:
+          IMAGE_PATH: ${{ steps.pr.outputs.image_path }}
+          PRIMARY_TAG: ${{ steps.pr.outputs.primary_tag }}
+          IMAGES_DIR: images
+          SBOM_DIR: bundle
+          GHCR_USER: ${{ github.actor }}
+          GHCR_TOKEN: ${{ github.token }}
+
+      - name: Post the report
+        if: always() && steps.pr.outputs.action == 'report'
+        run: python3 "${WORKFLOWS_PATH}/scripts/pr_report.py" comment --bundle bundle
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ATTACHMENTS_TOKEN: ${{ secrets.ATTACHMENTS_TOKEN }}
+          PR: ${{ steps.pr.outputs.pr }}
+          IMAGE_NAME: ${{ steps.pr.outputs.name }}
+          IMAGE_PATH: ${{ steps.pr.outputs.image_path }}
+          PRIMARY_TAG: ${{ steps.pr.outputs.primary_tag }}
+          HEAD_SHA: ${{ steps.pr.outputs.head_sha }}
+          BASE_REF: ${{ steps.pr.outputs.base_ref }}
+          RUN_URL: ${{ steps.pr.outputs.run_url }}
+          CONCLUSION: ${{ steps.pr.outputs.conclusion }}
+          FORK: ${{ steps.pr.outputs.fork }}
+          APPROVED: ${{ steps.pr.outputs.approved }}
+          PUBLISHED: ${{ steps.publish.outputs.published }}
+
+  unlabel:
+    name: Withdraw approval
+    # A new push to an approved fork pull request is unreviewed code again.
+    if: >-
+      github.event_name == 'pull_request_target' && github.event.action == 'synchronize' &&
+      github.event.pull_request.head.repo.full_name != github.repository &&
+      contains(github.event.pull_request.labels.*.name, 'safe-to-publish')
+    runs-on: ubuntu-24.04
+    permissions:
+      issues: write
+      pull-requests: write
+    steps:
+      - name: Remove the label
+        run: gh api --method DELETE "repos/${GITHUB_REPOSITORY}/issues/${PR}/labels/${APPROVAL_LABEL}"
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PR: ${{ github.event.pull_request.number }}
+
+  cleanup:
+    name: Delete PR images
+    # A closed pull request: delete every untrusted-pr/<name> version tagged pr-<number>-* (the index
+    # and the arch twins). GITHUB_TOKEN with packages: write can delete versions of a package linked to
+    # this repository; when the registry refuses, PACKAGES_TOKEN (delete:packages on the organisation)
+    # is tried, and without one the job warns and leaves the images to the control plane.
+    if: github.event_name == 'pull_request_target' && github.event.action == 'closed'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Check out repository (base branch)
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.base.sha }}
+          path: repo
+          persist-credentials: false
+
+      - name: Check out shared workflows
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.WORKFLOWS_REPOSITORY }}
+          ref: ${{ inputs.workflows_ref }}
+          path: ${{ env.WORKFLOWS_PATH }}
+          persist-credentials: false
+
+      - name: Delete package versions
+        run: |
+          set -euo pipefail
+          org="${GITHUB_REPOSITORY%%/*}"
+          repo="${GITHUB_REPOSITORY#*/}"
+          name=$(sed -nE 's/^name:[[:space:]]*"?([A-Za-z0-9._-]+)"?[[:space:]]*(#.*)?$/\1/p' repo/image.yml 2>/dev/null | head -1 || true)
+          package="untrusted-pr/${name:-${repo#docker-}}"
+          echo "Deleting versions of ${package} tagged pr-${PR_NUMBER}-*"
+          rc=0
+          python3 "${WORKFLOWS_PATH}/scripts/pr_cleanup.py" --org "${org}" --package "${package}" --pr "${PR_NUMBER}" || rc=$?
+          if [[ "${rc}" == "2" ]]; then
+            if [[ -n "${PACKAGES_TOKEN}" ]]; then
+              echo "GITHUB_TOKEN could not delete every version; retrying with PACKAGES_TOKEN"
+              GH_TOKEN="${PACKAGES_TOKEN}" python3 "${WORKFLOWS_PATH}/scripts/pr_cleanup.py" --org "${org}" --package "${package}" --pr "${PR_NUMBER}" || rc=$?
+              [[ "${rc}" == "2" ]] && echo "::warning::some ${package} versions of PR #${PR_NUMBER} could not be deleted with PACKAGES_TOKEN either"
+            else
+              echo "::warning::GITHUB_TOKEN could not delete every ${package} version of PR #${PR_NUMBER} and PACKAGES_TOKEN is not set; the control plane must remove them"
+            fi
+          elif [[ "${rc}" != "0" ]]; then
+            exit "${rc}"
+          fi
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PACKAGES_TOKEN: ${{ secrets.PACKAGES_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}

@@ -16,12 +16,13 @@ are the control plane's job.
 | Path | What |
 | --- | --- |
 | `.github/workflows/image-build.yml` | The reusable image build (`workflow_call`). |
+| `.github/workflows/pr-report.yml` | The trusted half of pull request builds (`workflow_call` from each image repo's generated `pr-report.yml`): the report comment, publishing an approved fork's image, deleting a closed pull request's images. |
 | `.github/workflows/mod-build.yml` | Reusable build for `docker-mods` branches. |
 | `.github/workflows/cleanup-staging.yml` | Weekly deletion of `build/*` staging images older than 7 days (runs in this repo). |
 | `.github/workflows/ci.yml` | Checks of this repository. |
 | `.github/actions/<name>/` | Composite actions; the logic lives in the script beside each `action.yml`. |
-| `scripts/` | Shared code: `lib.sh` (bash helpers, `retry_ghcr`), `resolve_version.py`, `next_tag.py`, `tags.py`, `package_versions.py`, `upstream_notes.py`, `pr_comment.py`, `pr_cleanup.py`, `cleanup_staging.py`, the prepare-job scripts, `check.sh`. |
-| `templates/build.yml` | The caller file the builder renders into image repos. |
+| `scripts/` | Shared code: `lib.sh` (bash helpers, `retry_ghcr`), `resolve_version.py`, `next_tag.py`, `tags.py`, `package_versions.py`, `upstream_notes.py`, `attach_sbom.py`, `pr_report.py`, `publish_pr_image.sh`, `pr_cleanup.py`, `cleanup_staging.py`, the prepare-job scripts, `check.sh`. |
+| `templates/build.yml`, `templates/pr-report.yml` | The caller files the builder renders into image repos. |
 | `fixtures/example-image/` | A minimal valid image repository for integration runs. |
 | `tests/` | pytest over every Python script plus static checks of the YAML. |
 
@@ -31,9 +32,9 @@ are the control plane's job.
 flowchart LR
   P[prepare<br/>manifest · resolve-version · next-tag<br/>render or check · shellcheck · s6 bits<br/>tag set · staging refs] --> A1[arch amd64<br/>free-disk · build-arch → build/ staging · test-arch]
   P --> A2[arch arm64<br/>free-disk · build-arch → build/ staging · test-arch]
-  A1 --> U[publish<br/>publish-manifest from staging · emit-bundle<br/>release or PR comment or package-check · notify-control]
+  A1 --> U[publish<br/>publish-manifest from staging · emit-bundle<br/>release or package-check · notify-control]
   A2 --> U
-  C[cleanup<br/>pull_request closed only<br/>delete untrusted-pr/… pr-N-*]
+  U -. workflow_run .-> R[pr-report.yml, trusted<br/>report comment · fork image after approval<br/>delete untrusted-pr/… pr-N-* on close]
 ```
 
 **prepare** (`ubuntu-24.04`) reads `image.yml` with the `manifest` action (validated with the contracts
@@ -67,11 +68,31 @@ signed `build.summary` event to the control plane (`notify-control`, always; sil
 empty), writes the job summary, and finally fails if any job failed. With `reason: packages` on a live
 branch the publish and release steps are replaced by `package-check` (below).
 
-**cleanup** runs alone when a pull request is closed (prepare, arch and publish are skipped): it deletes
-every `untrusted-pr/<name>` package version tagged `pr-<number>-*`, arch twins included. `GITHUB_TOKEN`
-with `packages: write` is tried first; when the registry refuses, `PACKAGES_TOKEN` (`delete:packages` on
-the organisation) is used if the caller has it, otherwise the job warns and leaves the images to the control
-plane.
+### Pull requests: the trusted half
+
+The build of a pull request runs the pull request's code (its Dockerfile, its image), so it never holds a
+secret or a write token on behalf of a fork, and it never posts to the pull request. Everything that needs
+either lives in `pr-report.yml`, called by each image repo's generated `pr-report.yml` on `workflow_run` (a
+Build finished) and `pull_request_target` (`labeled`, `synchronize`, `closed`). Both events run the base
+branch's workflow, and no job in it checks out, builds or runs pull request code.
+
+- **report** finds the pull request and its Build run through the API (`scripts/pr_report.py resolve`; a run
+  whose pull request has moved on is skipped), downloads the run's `bundle` artifact and reads it as untrusted
+  data: files are size-capped, the test tarballs are read member by member in memory, screenshots must be
+  PNGs, and every string is escaped before it reaches Markdown. The comment embeds the tests per arch,
+  the screenshots, digests and runtime figures, the package changes against the target branch's latest
+  release and the container log tail, and is updated in place on every build. Screenshots are uploaded as
+  comment attachments with `ATTACHMENTS_TOKEN` (a user token; the workflow token is refused by that endpoint);
+  without it the comment points at the artifact.
+- A fork's Build has a read-only token, so it saves its image as the `image-<arch>` artifacts instead of
+  pushing. **report** publishes it to `untrusted-pr/<name>:pr-<n>-<sha7>` (`scripts/publish_pr_image.sh`:
+  `docker load`, a platform check, push, SBOM attachment, index) only when the build is green and a
+  maintainer has added the `safe-to-publish` label; the label also triggers **report** when it is added after
+  the build. **unlabel** removes the label on every new push to a fork pull request.
+- **cleanup** runs when a pull request is closed: it deletes every `untrusted-pr/<name>` package version
+  tagged `pr-<number>-*`, arch twins included. `GITHUB_TOKEN` with `packages: write` is tried first; when the
+  registry refuses, `PACKAGES_TOKEN` (`delete:packages` on the organisation) is used if the caller has it,
+  otherwise the job warns and leaves the images to the control plane.
 
 ### Reasons
 
@@ -189,11 +210,12 @@ jobs:
 Inputs: `reason` (`push`, `upstream`, `packages`, `rebuild`, `manual`; see "Reasons"), `workflows_ref` (must
 match the ref in `uses:`; the composite actions are checked out from it), `ci_image`, `builder_image` (empty
 skips templating), `builder_ref`. Secrets (organisation level, absent in forks, all optional): `CONTROL_URL`,
-`CONTROL_EVENTS_SECRET`, `PACKAGES_TOKEN` (only for deleting the images of closed pull requests when
-`GITHUB_TOKEN` may not). `GITHUB_TOKEN` is enough for GHCR, Releases, the two bot commits and PR comments.
+`CONTROL_EVENTS_SECRET`. `GITHUB_TOKEN` is enough for GHCR, Releases and the two bot commits. `pr-report.yml`
+takes `ATTACHMENTS_TOKEN` (screenshot uploads) and `PACKAGES_TOKEN` (only for deleting the images of closed
+pull requests when `GITHUB_TOKEN` may not).
 
-The caller subscribes to `pull_request` with `types: [opened, synchronize, reopened, closed]`: the first
-three build, `closed` runs only the cleanup job. The control plane triggers builds with `repository_dispatch`
+The caller subscribes to `pull_request` with `types: [opened, synchronize, reopened]`; closing is
+`pr-report.yml`'s business. The control plane triggers builds with `repository_dispatch`
 (`types: [build]`, `client_payload.reason`) or `workflow_dispatch`. Of the two commits the workflow makes,
 `Update generated files [skip ci]` never starts another run and `Update package versions` is meant to.
 
@@ -220,8 +242,8 @@ Exit codes of the CLI: 0 resolved, 1 error, 3 assets not ready (try later).
 `<target>-<name>` and pushes `ghcr.io/linuxserver-playground/mods:<target>-<name>` and `:<target>-<name>-<sha7>`
 (plus `-<mod_version>` variants) on push to that branch, and
 `ghcr.io/linuxserver-playground/untrusted-pr/mods:<target>-<name>-pr-<n>` for pull requests. arm64 is built
-natively. `scripts/pr_cleanup.py` also understands the `*-pr-<n>` mod tags; the image workflow's cleanup job
-is the only caller today.
+natively. `scripts/pr_cleanup.py` also understands the `*-pr-<n>` mod tags; the PR report's cleanup job is the
+only caller today.
 
 ## Known limits
 

@@ -13,13 +13,14 @@ bundle attached to each Release). The contract is `CONVENTIONS.md` in `linuxserv
 
 | Path | What |
 | --- | --- |
-| `.github/workflows/image-build.yml` | The reusable image build: jobs `prepare`, `arch` (matrix), `publish`, and `cleanup` (closed pull requests only). |
+| `.github/workflows/image-build.yml` | The reusable image build: jobs `prepare`, `arch` (matrix), `publish`. It never posts to pull requests. |
+| `.github/workflows/pr-report.yml` | The trusted half of pull request builds: report comment, approved fork images, cleanup on close. Never check out or run pull request code here; artifacts are data. |
 | `.github/workflows/mod-build.yml` | Reusable mod build for `docker-mods` branches. |
 | `.github/workflows/cleanup-staging.yml` | Scheduled deletion of old `build/*` staging images (needs `PACKAGES_TOKEN`). |
 | `.github/workflows/ci.yml` | This repo's own checks. |
 | `.github/actions/<name>/` | One composite action per step; logic in the script next to `action.yml`. `build-arch` pushes to `build/` staging refs, `publish-manifest` creates the released tags from them, `package-check` is the `reason: packages` comparison and commit. |
 | `scripts/` | `lib.sh` bash helpers; Python modules shared by actions and tests. |
-| `templates/build.yml` | The caller file the builder renders into image repos. |
+| `templates/build.yml`, `templates/pr-report.yml` | The caller files the builder renders into image repos. |
 | `fixtures/example-image/` | Minimal valid image repo for integration runs. |
 | `tests/` | pytest; HTTP is mocked, nothing needs network or docker. |
 
