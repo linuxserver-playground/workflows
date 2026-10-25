@@ -390,3 +390,17 @@ def test_examples_from_builder_repo_parse():
         assert m["upstream"]["version"]["type"] in known
         found.add(m["upstream"]["version"]["type"])
     assert found
+
+
+def test_os_reads_the_package_table_from_the_workspace(tmp_path, monkeypatch):
+    """The manifest lives in a temp dir during the build; the package table is in the checkout."""
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / "package_versions.txt").write_text("pkg 1.0\n")
+    manifest_dir = tmp_path / "tmp"
+    manifest_dir.mkdir()
+    monkeypatch.setenv("GITHUB_WORKSPACE", str(repo))
+    version, _ = rv._os(manifest_dir)
+    assert version == hashlib.md5(b"pkg 1.0\n").hexdigest()[:8]
+    monkeypatch.delenv("GITHUB_WORKSPACE")
+    assert rv._os(manifest_dir) == ("none", "none")

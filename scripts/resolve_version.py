@@ -354,11 +354,17 @@ def _blob(src: dict[str, Any]) -> tuple[str, str]:
 
 
 def _os(manifest_dir: Path) -> tuple[str, str]:
-    path = manifest_dir / "package_versions.txt"
-    if not path.is_file():
-        # The first build of a repo has no package list yet; the build writes it.
-        return "none", "none"
-    return hashlib.md5(path.read_bytes()).hexdigest()[:8], "none"  # noqa: S324
+    # The manifest handed to the build is the compact image.json written to a temp dir, so the package
+    # table is looked up in the repository checkout first (GITHUB_WORKSPACE), then next to the manifest.
+    candidates = []
+    if workspace := os.environ.get("GITHUB_WORKSPACE"):
+        candidates.append(Path(workspace) / "package_versions.txt")
+    candidates.append(manifest_dir / "package_versions.txt")
+    for path in candidates:
+        if path.is_file():
+            return hashlib.md5(path.read_bytes()).hexdigest()[:8], "none"  # noqa: S324
+    # The first build of a repo has no package list yet; the build writes it.
+    return "none", "none"
 
 
 def _command(src: dict[str, Any]) -> tuple[str, str]:
