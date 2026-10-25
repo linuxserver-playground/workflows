@@ -48,19 +48,15 @@ def first_sentence(summary: str) -> str:
 
 
 def base_image_from(dockerfile: Path) -> str:
+    """The image of the last FROM: the runtime stage. Earlier stages only build or supply files."""
     if not dockerfile.is_file():
         return ""
+    ref = ""
     for line in dockerfile.read_text(encoding="utf-8", errors="replace").splitlines():
         if line.strip().upper().startswith("FROM "):
-            parts = line.strip().split()
-            ref = parts[1]
-            # FROM --platform=... ref
-            for p in parts[1:]:
-                if not p.startswith("--"):
-                    ref = p
-                    break
-            return ref
-    return ""
+            # FROM [--platform=...] ref [AS name]
+            ref = next((p for p in line.strip().split()[1:] if not p.startswith("--")), "")
+    return ref
 
 
 def compute(manifest: dict[str, Any], *, event_name: str, ref_name: str, repository: str, sha: str, pr_number: str, fork: bool, repo_dir: Path) -> dict[str, Any]:

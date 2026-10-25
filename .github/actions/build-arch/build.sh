@@ -36,7 +36,8 @@ fi
 cp "${built_dockerfile}" "${OUT_DIR}/dockerfile.${ARCH}"
 
 # ---- Base image with digest ----
-base_image=$(awk 'toupper($1)=="FROM" { for (i=2;i<=NF;i++) if ($i !~ /^--/) { print $i; exit } }' "${built_dockerfile}" | head -1)
+# The last FROM is the runtime stage; earlier stages only build or supply files (COPY --from).
+base_image=$(awk 'toupper($1)=="FROM" { for (i=2;i<=NF;i++) if ($i !~ /^--/) { ref=$i; break } } END { print ref }' "${built_dockerfile}")
 base_digest=""
 base_ref="${base_image}"
 if [[ -n "${base_image}" && "${base_image}" != "scratch" ]]; then

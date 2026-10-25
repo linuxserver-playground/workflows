@@ -87,6 +87,17 @@ def test_plan_live():
     assert out["sha7"] == "0123456"
 
 
+def test_base_image_is_the_last_from(tmp_path):
+    dockerfile = tmp_path / "Dockerfile"
+    dockerfile.write_text(
+        "# syntax=docker/dockerfile:1\n\n"
+        "FROM ghcr.io/linuxserver/unrar:latest AS unrar\n\n"
+        "FROM --platform=linux/amd64 ghcr.io/linuxserver/baseimage-alpine:3.24 AS buildstage\nRUN make\n\n"
+        "FROM ghcr.io/linuxserver/baseimage-alpine:3.24\nCOPY --from=unrar /usr/bin/unrar-alpine /usr/bin/unrar\n"
+    )
+    assert manifest_action.base_image_from(dockerfile) == "ghcr.io/linuxserver/baseimage-alpine:3.24"
+
+
 def test_plan_pr_from_fork_and_dev():
     pr = manifest_action.compute(fixture_manifest(), event_name="pull_request", ref_name="main", repository="o/docker-example", sha=SHA, pr_number="7", fork=True, repo_dir=FIXTURE)
     assert pr["mode"] == "pr"
