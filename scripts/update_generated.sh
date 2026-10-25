@@ -2,7 +2,13 @@
 # Templating step of the prepare job.
 #
 #   update_generated.sh render <builder image> <branch>   live: render, commit once, push, continue
-#   update_generated.sh check  <builder image>            pr/dev: fail on drift
+#   update_generated.sh check  <builder image>            pr/dev: validate; drift only warns
+#
+# A PR or branch build never re-renders: the live build does that once after merge. Generated files that
+# differ from a fresh render there only mean the builder changed since the live branch was templated, so
+# 'check' reports that as a warning and fails on real problems only (image.yml, Dockerfiles, s6 scripts,
+# credentials). With BASE_SHA (a pull request's base) it also fails when the PR itself edits a generated
+# file, since those are never edited by hand.
 #
 # The builder container is run with the repository mounted at /repo (its entrypoint cds there and
 # runs the builder CLI). 'render' is limited to the four in-repo files so .builder-out/ is never
@@ -46,11 +52,24 @@ run_builder() {
 }
 
 if [[ "${cmd}" == "check" ]]; then
-  group "builder check"
-  if ! run_builder check; then
-    die "builder check failed: generated files are out of date or image.yml is invalid. Run 'builder render' locally and commit the result."
+  if [[ -n "${BASE_SHA:-}" ]]; then
+    base=$(git merge-base "${BASE_SHA}" HEAD 2>/dev/null || echo "${BASE_SHA}")
+    edited=$(git diff --name-only "${base}" HEAD -- "${GENERATED_FILES[@]}")
+    if [[ -n "${edited}" ]]; then
+      die "this pull request edits generated files ($(echo "${edited}" | paste -sd, -)); change image.yml or the builder templates instead, the live build renders them after merge"
+    fi
   fi
+  group "builder check"
+  out=$(run_builder check --drift warn 2>&1) && rc=0 || rc=$?
+  echo "${out}"
   endgroup
+  if (( rc != 0 )); then
+    die "builder check failed: image.yml or the repository has problems (listed above)."
+  fi
+  drifted=$(grep -E '^warning: [^:]+: <file>:' <<< "${out}" | sed -E 's/^warning: ([^:]+):.*/\1/' | paste -sd, - || true)
+  if [[ -n "${drifted}" ]]; then
+    warn "generated files differ from the current builder (${drifted}); the live build re-renders them after merge"
+  fi
   set_output checkout_sha "${head_sha}"
   set_output generated_updated false
   exit 0

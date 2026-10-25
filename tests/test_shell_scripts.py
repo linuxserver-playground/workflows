@@ -173,6 +173,44 @@ def test_generated_files_current_makes_no_commit(env, tmp_path):
     assert outputs(env)["generated_updated"] == "false"
 
 
+def check_stub(env: dict, output: str, rc: int = 0) -> None:
+    """A docker stub whose builder container prints `output` and exits `rc`."""
+    stub = Path(env["PATH"].split(":")[0]) / "docker"
+    stub.write_text(f'#!/usr/bin/env bash\necho "$*" >> "${{DOCKER_LOG}}"\nif [[ "$1" == "run" ]]; then printf "%s\\n" "{output}"; exit {rc}; fi\nexit 0\n')
+
+
+def test_check_warns_on_drift_and_passes(env, tmp_path):
+    _, clone = make_remote(tmp_path, {"README.md": "# x\n", "image.yml": "name: x\n"})
+    check_stub(env, "warning: README.md: <file>: differs (run builder render)")
+    proc = run(UPDATE_GENERATED, env, "check", "ghcr.io/o/builder:latest", cwd=clone)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert "check --drift warn" in Path(env["DOCKER_LOG"]).read_text()
+    assert "::warning::generated files differ from the current builder (README.md)" in proc.stdout
+    assert outputs(env)["checkout_sha"] == git("rev-parse", "HEAD", cwd=clone)
+
+
+def test_check_fails_on_real_problems(env, tmp_path):
+    _, clone = make_remote(tmp_path, {"README.md": "# x\n"})
+    check_stub(env, "image.yml: name: must be a string", rc=1)
+    proc = run(UPDATE_GENERATED, env, "check", "ghcr.io/o/builder:latest", cwd=clone)
+    assert proc.returncode != 0
+    assert "builder check failed" in proc.stdout
+
+
+def test_check_fails_when_a_pull_request_edits_generated_files(env, tmp_path):
+    _, clone = make_remote(tmp_path, {"README.md": "# x\n", "Dockerfile": "FROM x\n"})
+    base = git("rev-parse", "HEAD", cwd=clone)
+    check_stub(env, "ok")
+    (clone / "Dockerfile").write_text("FROM y\n")
+    git("commit", "--quiet", "-am", "Change the Dockerfile", cwd=clone)
+    assert run(UPDATE_GENERATED, {**env, "BASE_SHA": base}, "check", "ghcr.io/o/builder:latest", cwd=clone).returncode == 0
+    (clone / "README.md").write_text("# hand edited\n")
+    git("commit", "--quiet", "-am", "Edit the README", cwd=clone)
+    proc = run(UPDATE_GENERATED, {**env, "BASE_SHA": base}, "check", "ghcr.io/o/builder:latest", cwd=clone)
+    assert proc.returncode != 0
+    assert "this pull request edits generated files (README.md)" in proc.stdout
+
+
 # -------------------------------------------------------------------------------------------- package_check.sh
 
 PACKAGE_CHECK = ROOT / ".github" / "actions" / "package-check" / "package_check.sh"

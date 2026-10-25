@@ -154,6 +154,7 @@ jobs:
         run: bash "${WORKFLOWS_PATH}/scripts/update_generated.sh" check "${BUILDER_IMAGE}"
         env:
           BUILDER_IMAGE: ${{ inputs.builder_image }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
           GITHUB_TOKEN: ${{ github.token }}
 
       - name: Collect templating result
