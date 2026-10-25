@@ -14,6 +14,20 @@ group "Pulling ${CI_IMAGE}"
 retry_ghcr docker pull "${CI_IMAGE}"
 endgroup
 
+# The file tree comes from dumper, run inside the image by the harness. Always the latest stable release.
+DUMPER_REPOSITORY="${DUMPER_REPOSITORY:-linuxserver-playground/dumper}"
+dumper_asset="dumper-$(uname -m)"
+dumper_dir="${RUNNER_TEMP:-/tmp}/dumper"
+group "Fetching ${dumper_asset} (latest release of ${DUMPER_REPOSITORY})"
+mkdir -p "${dumper_dir}"
+dumper_base="https://github.com/${DUMPER_REPOSITORY}/releases/latest/download"
+retry 3 10 curl -fsSL -o "${dumper_dir}/${dumper_asset}" "${dumper_base}/${dumper_asset}"
+retry 3 10 curl -fsSL -o "${dumper_dir}/sha256sums.txt" "${dumper_base}/sha256sums.txt"
+(cd "${dumper_dir}" && sha256sum -c --ignore-missing sha256sums.txt) || die "${dumper_asset} does not match sha256sums.txt"
+chmod +x "${dumper_dir}/${dumper_asset}"
+"${dumper_dir}/${dumper_asset}" version
+endgroup
+
 group "Running ci harness for ${IMAGE} (${ARCH}, ${MODE})"
 start=${SECONDS}
 set +e
@@ -25,6 +39,8 @@ docker run --rm \
   -e MODE="${MODE}" \
   -e MANIFEST_JSON="${MANIFEST_JSON}" \
   -e PREVIOUS_PACKAGES_URL="${PREVIOUS_PACKAGES_URL:-}" \
+  -v "${dumper_dir}/${dumper_asset}":/usr/local/bin/dumper:ro \
+  -e DUMPER=/usr/local/bin/dumper \
   "${CI_IMAGE}"
 rc=$?
 set -e

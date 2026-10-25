@@ -71,6 +71,8 @@ args=()
 for l in "${labels[@]}"; do args+=(--label "${l}"); done
 
 # ---- Build args ----
+# No --sbom: BuildKit's scan records every file and outgrows its 80 MiB attestation limit on desktop images.
+# The ci run writes a packages-only SBOM and publish-manifest attaches it in the same attestation layout.
 if [[ -n "${VERSION_ARG}" ]]; then args+=(--build-arg "${VERSION_ARG}=${UPSTREAM}"); fi
 args+=(--build-arg "VERSION=${VERSION_LABEL}" --build-arg "BUILD_DATE=${BUILD_DATE}")
 while IFS= read -r kv; do
@@ -91,7 +93,7 @@ group "docker buildx build ${ARCH} (push=${PUSH}${STAGING_REF:+, staging})"
 start=${SECONDS}
 if [[ "${PUSH}" == "true" ]]; then
   retry_ghcr docker buildx build --no-cache --pull --platform "${platform}" -f "${built_dockerfile}" \
-    "${args[@]}" --provenance=mode=max --sbom=true --push -t "${remote_ref}" --metadata-file "${meta}" .
+    "${args[@]}" --provenance=mode=max --sbom=false --push -t "${remote_ref}" --metadata-file "${meta}" .
   # Test against exactly what was pushed.
   retry_ghcr docker pull --platform "${platform}" "${remote_ref}"
   image_ref="${remote_ref}"

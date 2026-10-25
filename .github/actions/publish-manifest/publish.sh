@@ -13,6 +13,7 @@ source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
 : "${IMAGE_PATH:?}" "${PRIMARY_TAG:?}" "${TAGS:?}" "${PLATFORMS:?}"
 SOURCES="${SOURCES:-}"
 DESCRIPTION="${DESCRIPTION:-}"
+SBOM_DIR="${SBOM_DIR:-}"
 
 mapfile -t tags < <(jq -r '.[]' <<< "${TAGS}")
 mapfile -t platforms < <(jq -r '.[]' <<< "${PLATFORMS}")
@@ -44,6 +45,22 @@ if [[ -n "${DESCRIPTION}" ]]; then
   annotation=(--annotation "index:org.opencontainers.image.description=${DESCRIPTION}")
 fi
 
+# The packages-only SBOM from each arch's ci run joins the provenance in that platform's attestation manifest
+# on the source, so the released index created below carries it (BuildKit's own --sbom scan is off).
+if [[ -n "${SBOM_DIR}" ]]; then
+  group "Attaching SBOMs"
+  for arch in "${platforms[@]}"; do
+    sbom="${SBOM_DIR}/sbom.${arch}.spdx.json"
+    if [[ ! -f "${sbom}" ]]; then
+      warn "no ${sbom}; ${arch} is published without an SBOM attestation"
+      continue
+    fi
+    python3 "${GITHUB_ACTION_PATH}/../../../scripts/attach_sbom.py" --ref "${source_for[${arch}]}" --arch "${arch}" --sbom "${sbom}" \
+      || die "could not attach the SBOM for ${arch}"
+  done
+  endgroup
+fi
+
 group "Creating index ${IMAGE_PATH}:${PRIMARY_TAG} with ${#tags[@]} tags from ${sources[*]}"
 targets=()
 for t in "${tags[@]}"; do targets+=(-t "${IMAGE_PATH}:${t}"); done
@@ -68,6 +85,12 @@ endgroup
 
 index_digest=$(retry_ghcr docker buildx imagetools inspect "${IMAGE_PATH}:${PRIMARY_TAG}" --format '{{json .Manifest.Digest}}' | tr -d '"')
 [[ "${index_digest}" =~ ^sha256:[0-9a-f]{64}$ ]] || die "unexpected index digest ${index_digest}"
+if [[ -n "${SBOM_DIR}" ]]; then
+  sbom_platforms=$(docker buildx imagetools inspect "${IMAGE_PATH}:${PRIMARY_TAG}" --format '{{json .SBOM}}' 2>/dev/null \
+    | jq -r 'if has("SPDX") then {"single platform": .} else . end | to_entries[] | select(.value.SPDX != null)
+             | "\(.key) (\(.value.SPDX.packages | length) packages)"' 2>/dev/null | paste -sd, - || true)
+  notice "SBOM attestations on ${IMAGE_PATH}:${PRIMARY_TAG}: ${sbom_platforms:-none}"
+fi
 
 published=()
 for t in "${tags[@]}"; do

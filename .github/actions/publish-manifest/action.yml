@@ -19,6 +19,9 @@ inputs:
   description:
     description: org.opencontainers.image.description set as an index annotation so the GHCR package page shows it
     default: ""
+  sbom_dir:
+    description: Directory holding sbom.<arch>.spdx.json from the ci runs; each is attached as that platform's SBOM attestation
+    default: ""
 
 outputs:
   index_digest: { value: "${{ steps.publish.outputs.index_digest }}" }
@@ -38,3 +41,6 @@ runs:
         PLATFORMS: ${{ inputs.platforms }}
         SOURCES: ${{ inputs.sources }}
         DESCRIPTION: ${{ inputs.description }}
+        SBOM_DIR: ${{ inputs.sbom_dir }}
+        GHCR_USER: ${{ github.actor }}
+        GHCR_TOKEN: ${{ github.token }}

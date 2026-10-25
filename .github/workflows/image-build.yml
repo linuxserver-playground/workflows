@@ -431,6 +431,7 @@ jobs:
           platforms: ${{ needs.prepare.outputs.platforms }}
           sources: ${{ needs.prepare.outputs.staging_refs }}
           description: ${{ needs.prepare.outputs.description }}
+          sbom_dir: out
 
       - name: Attest provenance (live)
         if: steps.result.outputs.result == 'success' && env.PUSH == 'true' && env.MODE == 'live' && env.PACKAGE_CHECK != 'true'

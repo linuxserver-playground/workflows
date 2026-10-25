@@ -46,7 +46,8 @@ the per-arch staging references `ghcr.io/<org>/build/<name>:<arch>-<sha7>-<run i
 
 **arch** (matrix, `ubuntu-24.04` for amd64 and `ubuntu-24.04-arm` for arm64, `fail-fast: false`) injects
 `ENV LSIO_FIRST_PARTY=true` after `FROM`, builds with every label of CONVENTIONS §5, `--no-cache --pull`,
-`--provenance=mode=max --sbom=true` when pushing, pushes the image to its **staging reference** (never to a
+`--provenance=mode=max --sbom=false` when pushing (BuildKit's SBOM scan records every file and outgrew its
+80 MiB attestation limit on desktop images), pushes the image to its **staging reference** (never to a
 released tag) and records the platform digest, or `docker save`s the image into the `image-<arch>` artifact
 for fork pull requests. Then it runs the ci container (below) against exactly that reference and uploads
 `out/` as the `bundle-<arch>` artifact whatever the test result. Test failure fails the arch job after the
@@ -55,7 +56,10 @@ upload.
 **publish** (`ubuntu-24.04`, `if: always()`) merges the per-arch artifacts and, only when prepare and every
 arch job succeeded, creates the multi-platform indexes and arch twins for the whole tag set from the staging
 references (`publish-manifest`; `imagetools create` tags a manifest across repositories of the same
-registry, so a run that fails anywhere leaves every released tag untouched). It then writes and validates
+registry, so a run that fails anywhere leaves every released tag untouched). Before that, each arch's
+packages-only `sbom.<arch>.spdx.json` from the ci run is added to the staging reference's attestation manifest
+next to the provenance (`scripts/attach_sbom.py`, in BuildKit's in-toto layout), so every released tag carries
+it and `docker buildx imagetools inspect --format '{{json .SBOM}}'` shows it. It then writes and validates
 `build.json` (`emit-bundle`), attests the index (live), creates the git tag at the built commit and the
 GitHub Release on the branch (`target_commitish` is the branch name, CONVENTIONS §3) with the three-section
 notes and every bundle asset (`release`, live only), posts or updates the single PR comment (pr), POSTs the
@@ -149,11 +153,17 @@ docker run --rm \
   -e MODE="live|dev|pr" \
   -e MANIFEST_JSON="<image.yml as compact JSON>" \
   -e PREVIOUS_PACKAGES_URL="<optional URL of the previous release's package_versions.<arch>.txt>" \
+  -v "<dumper binary>":/usr/local/bin/dumper:ro -e DUMPER=/usr/local/bin/dumper \
   ghcr.io/linuxserver-playground/ci:latest
 ```
 
+The dumper binary is the latest stable release of
+[linuxserver-playground/dumper](https://github.com/linuxserver-playground/dumper) for the runner's
+`uname -m`, checked against its `sha256sums.txt` (input `dumper_repository` of `test-arch`).
+
 It writes into `/out`: `test.<arch>.json` (test-report schema), `test.<arch>.tar.gz`,
-`packages.<arch>.json.gz`, `files.<arch>.json.gz`, `layers.<arch>.json`, `package_versions.<arch>.txt`,
+`packages.<arch>.json.gz`, `sbom.<arch>.spdx.json` (attached to the image, not the Release),
+`files.<arch>.json.gz`, `layers.<arch>.json`, `package_versions.<arch>.txt`,
 `image-config.<arch>.json` (`docker image inspect` output) and `init-graph.<arch>.json`. Exit code 0 even
 when tests fail (the report says so); non-zero only when the harness itself broke. The image is configurable
 through the `ci_image` input until the ci image is published.

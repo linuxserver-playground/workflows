@@ -17,6 +17,9 @@ inputs:
     default: ""
   ci_image:
     default: ghcr.io/linuxserver-playground/ci:latest
+  dumper_repository:
+    description: Repository whose latest release provides the dumper binary for the file tree
+    default: linuxserver-playground/dumper
   out_dir:
     description: Host directory mounted at /out
     required: true
@@ -46,4 +49,5 @@ runs:
         MANIFEST_JSON: ${{ inputs.manifest_json }}
         PREVIOUS_PACKAGES_URL: ${{ inputs.previous_packages_url }}
         CI_IMAGE: ${{ inputs.ci_image }}
+        DUMPER_REPOSITORY: ${{ inputs.dumper_repository }}
         OUT_DIR: ${{ inputs.out_dir }}
