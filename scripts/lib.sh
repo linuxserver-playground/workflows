@@ -77,7 +77,9 @@ retry_ghcr() {
     if [[ "${exit_code}" == "0" ]]; then
       rm -f "${errfile}"
       return 0
-    elif ! grep -q -i -E "retry-after:|toomanyrequests|too many requests|429|rate limit" "${errfile}"; then
+    # 403 "denied" is retried too: when two runs of one repo create a new GHCR package at the same moment,
+    # the loser's manifest PUT is refused for a few seconds while GHCR grants the repository access.
+    elif ! grep -q -i -E "retry-after:|toomanyrequests|too many requests|429|rate limit|403 Forbidden|^denied$" "${errfile}"; then
       rm -f "${errfile}"
       return "${exit_code}"
     elif (( attempt >= max_attempts )); then
