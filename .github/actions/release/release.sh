@@ -47,7 +47,9 @@ fi
 endgroup
 
 # ---- Section 1: CI links: hub results page (rendered from this release's assets), control live status ----
-if [[ -n "${HUB_URL:-}" ]]; then
+if [[ -n "${SITE_URL:-}" ]]; then
+  ci_url="${SITE_URL%/}/images/${IMAGE_NAME}/builds/${TAG}/"
+elif [[ -n "${HUB_URL:-}" ]]; then
   ci_url="${HUB_URL%/}/builds/${IMAGE_NAME}/${TAG}/"
 else
   ci_url=""

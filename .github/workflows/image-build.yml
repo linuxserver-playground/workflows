@@ -457,6 +457,7 @@ jobs:
           index_digest: ${{ steps.manifest.outputs.index_digest }}
           control_url: ${{ secrets.CONTROL_URL }}
           hub_url: ${{ vars.HUB_URL }}
+          site_url: ${{ vars.SITE_URL }}
           builder_ref: ${{ inputs.builder_ref }}
 
       - name: Release (live)
@@ -475,6 +476,7 @@ jobs:
           upstream: ${{ needs.prepare.outputs.upstream }}
           control_url: ${{ secrets.CONTROL_URL }}
           hub_url: ${{ vars.HUB_URL }}
+          site_url: ${{ vars.SITE_URL }}
           image_name: ${{ needs.prepare.outputs.name }}
 
       # ---- reason=packages (live): compare, commit on change, never publish or release ----

@@ -18,6 +18,9 @@ inputs:
     default: ""
   control_url:
     default: ""
+  site_url:
+    description: Public URL of the website; live builds link their CI results page there
+    default: ""
   hub_url:
     description: Public URL of the hub (Pages); live builds link their results page there
     default: ""
@@ -58,7 +61,8 @@ runs:
           --reason "${REASON}" \
           --index-digest "${INDEX_DIGEST}" \
           --control-url "${CONTROL_URL}" \
-          --hub-url "${HUB_URL}"
+          --hub-url "${HUB_URL}" \
+          --site-url "${SITE_URL}"
         python3 -m contracts bundle "${OUT_DIR}/build.json"
       env:
         OUT_DIR: ${{ inputs.out_dir }}
@@ -69,3 +73,4 @@ runs:
         INDEX_DIGEST: ${{ inputs.index_digest }}
         CONTROL_URL: ${{ inputs.control_url }}
         HUB_URL: ${{ inputs.hub_url }}
+        SITE_URL: ${{ inputs.site_url }}

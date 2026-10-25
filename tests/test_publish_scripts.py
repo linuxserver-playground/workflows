@@ -94,7 +94,7 @@ def _validate(kind: str, data: dict) -> list[str]:
 def test_bundle_live_is_valid(tmp_path):
     out = tmp_path / "out"
     write_out_dir(out)
-    bundle = emit_bundle.build_bundle(prepare_outputs(), out, repository="o/docker-example", run_id=42, run_url="https://github.com/o/docker-example/actions/runs/42", workflows_ref="v1", ci_image="ghcr.io/linuxserver-playground/ci:latest", reason="upstream", index_digest=INDEX, control_url="https://control.example.org", hub_url="https://hub.example.org/hub")
+    bundle = emit_bundle.build_bundle(prepare_outputs(), out, repository="o/docker-example", run_id=42, run_url="https://github.com/o/docker-example/actions/runs/42", workflows_ref="v1", ci_image="ghcr.io/linuxserver-playground/ci:latest", reason="upstream", index_digest=INDEX, control_url="https://control.example.org", hub_url="https://hub.example.org/hub", site_url="https://www.example.org/site")
     assert _validate("bundle", bundle) == []
     assert bundle["version"] == {"upstream": "v1.2.3", "upstream_clean": "v1.2.3", "semver": "1.2.3", "release_tag": "latest", "tags": ["latest", "v1.2.3-ls4", "amd64-latest"], "source": "github_release", "source_url": "https://github.com/o/r/releases/tag/v1.2.3", "ls_build": 4, "tag": "v1.2.3-ls4"}
     assert [p["arch"] for p in bundle["platforms"]] == ["amd64", "arm64"]
@@ -103,7 +103,7 @@ def test_bundle_live_is_valid(tmp_path):
     assert bundle["index_digest"] == INDEX
     assert bundle["config"]["exposed_ports"] == ["8080/tcp"] and bundle["config"]["volumes"] == ["/config"]
     assert bundle["dockerfile"]["amd64"].startswith("FROM x")
-    assert bundle["test"] == {"enabled": True, "success": True, "per_arch": {"amd64": True, "arm64": True}, "report_url": "https://hub.example.org/hub/builds/example/v1.2.3-ls4/"}
+    assert bundle["test"] == {"enabled": True, "success": True, "per_arch": {"amd64": True, "arm64": True}, "report_url": "https://www.example.org/site/images/example/builds/v1.2.3-ls4/"}
     assert bundle["packages"]["amd64"] == {"count": 3, "distro": "Alpine Linux v3.22", "hash": hashlib.md5(b"NAME VERSION TYPE\njq 1.7 apk\n").hexdigest()[:8], "by_type": {"apk": 2, "binary": 1}}
     assert bundle["init_graph"]["units"][0]["name"] == "init-example-config"
     assert bundle["previous"] == {"tag": "v1.2.2-ls3", "release_url": "https://github.com/o/docker-example/releases/tag/v1.2.2-ls3"}

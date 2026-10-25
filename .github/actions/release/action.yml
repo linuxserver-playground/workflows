@@ -27,6 +27,8 @@ inputs:
     default: ""
   hub_url:
     default: ""
+  site_url:
+    default: ""
   image_name:
     description: The image name, for the hub results URL
     required: true
@@ -58,6 +60,7 @@ runs:
         UPSTREAM: ${{ inputs.upstream }}
         CONTROL_URL: ${{ inputs.control_url }}
         HUB_URL: ${{ inputs.hub_url }}
+        SITE_URL: ${{ inputs.site_url }}
         IMAGE_NAME: ${{ inputs.image_name }}
         REPOSITORY: ${{ inputs.repository }}
         RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
