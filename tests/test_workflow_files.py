@@ -208,7 +208,7 @@ def test_publish_derives_the_record_before_the_release():
     assert names.index("Emit build.json") < names.index("Derive record.json") < names.index("Release (live)")
     step = _steps(wf, "publish")["record"]
     assert step["uses"] == "./.lsio-workflows/.github/actions/record"
-    assert step["with"]["previous_tag"] == "${{ needs.prepare.outputs.previous_tag }}"
+    assert step["with"]["previous_tag"] == "${{ needs.prepare.outputs.diff_base }}"
     record = load(ROOT / ".github" / "actions" / "record" / "action.yml")
     assert all(s.get("continue-on-error") for s in record["runs"]["steps"] if s.get("shell"))
     assert "python3 -m builder record" in record["runs"]["steps"][-1]["run"]

@@ -22,6 +22,7 @@ outputs:
   previous_ls_build: { value: "${{ steps.next.outputs.previous_ls_build }}" }
   previous_release_url: { value: "${{ steps.next.outputs.previous_release_url }}" }
   head_already_released: { value: "${{ steps.next.outputs.head_already_released }}" }
+  diff_base: { value: "${{ steps.next.outputs.diff_base }}" }
 
 runs:
   using: composite
@@ -37,7 +38,7 @@ runs:
         result=$(python3 "${GITHUB_ACTION_PATH}/../../../scripts/next_tag.py" \
           --repo "${REPOSITORY}" --branch "${BRANCH}" --release-tag "${RELEASE_TAG}" --other-tags "${OTHER_TAGS}")
         echo "${result}"
-        for key in ls_build previous_tag previous_ls_build previous_release_url head_already_released; do
+        for key in ls_build previous_tag previous_ls_build previous_release_url head_already_released diff_base; do
           set_output "${key}" "$(jq -r --arg k "${key}" '.[$k] // ""' <<< "${result}")"
         done
       env:

@@ -86,6 +86,7 @@ jobs:
       previous_tag: ${{ steps.next.outputs.previous_tag }}
       previous_release_url: ${{ steps.next.outputs.previous_release_url }}
       head_already_released: ${{ steps.next.outputs.head_already_released || 'false' }}
+      diff_base: ${{ steps.next.outputs.diff_base }}
       primary_tag: ${{ steps.tags.outputs.primary_tag }}
       tags: ${{ steps.tags.outputs.tags }}
       all_tags: ${{ steps.tags.outputs.all_tags }}
@@ -488,7 +489,7 @@ jobs:
         uses: ./.lsio-workflows/.github/actions/record
         with:
           out_dir: out
-          previous_tag: ${{ needs.prepare.outputs.previous_tag }}
+          previous_tag: ${{ needs.prepare.outputs.diff_base }}
 
       - name: Release (live)
         id: release

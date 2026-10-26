@@ -32,11 +32,25 @@ def test_head_already_tagged_keeps_number():
     out = next_tag.pick(releases(), "latest", "master", other_tags=["develop"], head_tags=["4.0.20.3014-ls2"])
     assert out["ls_build"] == 2
     assert out["head_already_released"] is True
+    # The rebuild republishes ls2, so its record diffs against the release before it.
+    assert out["previous_tag"] == "4.0.20.3014-ls2" and out["diff_base"] != "4.0.20.3014-ls2"
+
+
+def test_diff_base_is_the_previous_release_for_a_new_commit():
+    out = next_tag.pick(releases(), "latest", "master", other_tags=["develop"])
+    assert out["diff_base"] == out["previous_tag"]
 
 
 def test_no_releases_starts_at_one():
     out = next_tag.pick([], "latest", "master")
-    assert out == {"ls_build": 1, "previous_tag": "", "previous_ls_build": 0, "previous_release_url": "", "head_already_released": False}
+    assert out == {
+        "ls_build": 1,
+        "previous_tag": "",
+        "previous_ls_build": 0,
+        "previous_release_url": "",
+        "head_already_released": False,
+        "diff_base": "",
+    }
 
 
 def test_other_branch_tags_not_claimed_without_target_commitish():

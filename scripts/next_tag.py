@@ -10,7 +10,8 @@ branch's latest GitHub Release tag, never from a registry. The tag shape is
         [--other-tags develop,nightly] [--head-sha <sha>] [--head-tags tag1,tag2]
 
 Prints JSON: {"ls_build": N, "previous_tag": "...", "previous_ls_build": M,
-"previous_release_url": "..."}.
+"previous_release_url": "...", "head_already_released": bool, "diff_base": "..."}. `diff_base` is the newest
+release of the branch not made from this commit: what the build's record.json diffs against.
 
 Releases are read with ``gh api --paginate``; ``pick`` is pure and unit-tested with fixtures.
 """
@@ -75,6 +76,7 @@ def pick(
     """
     other_tags = other_tags or []
     head_tags = set(head_tags or [])
+    found: list[tuple[str, int, str]] = []
     for rel in releases:
         if rel.get("draft"):
             continue
@@ -85,16 +87,29 @@ def pick(
         m = matches_branch(tag, release_tag, other_tags)
         if not m:
             continue
-        previous_n = int(m.group("n"))
-        next_n = previous_n if tag in head_tags else previous_n + 1
+        found.append((tag, int(m.group("n")), rel.get("html_url") or ""))
+        # The previous release decides the build number; the diff needs the newest one that is not this commit
+        # (a rebuild of a released head republishes its tag), so keep looking once past a head tag.
+        if tag not in head_tags:
+            break
+    if not found:
         return {
-            "ls_build": next_n,
-            "previous_tag": tag,
-            "previous_ls_build": previous_n,
-            "previous_release_url": rel.get("html_url") or "",
-            "head_already_released": tag in head_tags,
+            "ls_build": 1,
+            "previous_tag": "",
+            "previous_ls_build": 0,
+            "previous_release_url": "",
+            "head_already_released": False,
+            "diff_base": "",
         }
-    return {"ls_build": 1, "previous_tag": "", "previous_ls_build": 0, "previous_release_url": "", "head_already_released": False}
+    tag, previous_n, url = found[0]
+    return {
+        "ls_build": previous_n if tag in head_tags else previous_n + 1,
+        "previous_tag": tag,
+        "previous_ls_build": previous_n,
+        "previous_release_url": url,
+        "head_already_released": tag in head_tags,
+        "diff_base": next((t for t, _, _ in found if t not in head_tags), ""),
+    }
 
 
 def head_tags_from_git() -> list[str]:
