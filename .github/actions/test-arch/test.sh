@@ -5,7 +5,8 @@ set -euo pipefail
 # shellcheck source=../../../scripts/lib.sh
 source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
 
-: "${IMAGE:?}" "${ARCH:?}" "${MODE:?}" "${MANIFEST_JSON:?}" "${OUT_DIR:?}"
+: "${IMAGE:?}" "${ARCH:?}" "${MODE:?}" "${MANIFEST:?}" "${OUT_DIR:?}"
+MANIFEST_JSON=$(<"${MANIFEST}")
 CI_IMAGE="${CI_IMAGE:-ghcr.io/linuxserver-playground/ci:latest}"
 mkdir -p "${OUT_DIR}"
 out_abs=$(cd "${OUT_DIR}" && pwd)
@@ -51,7 +52,7 @@ sudo chown -R "$(id -u):$(id -g)" "${out_abs}" 2>/dev/null || true
 ls -la "${out_abs}" || true
 
 report="${out_abs}/test.${ARCH}.json"
-tests_enabled=$(jq -r '.test.enabled // true' <<< "${MANIFEST_JSON}")
+tests_enabled=$(jq -r 'if .test.enabled == false then "false" else "true" end' <<< "${MANIFEST_JSON}")
 success=false
 table=""
 if [[ -f "${report}" ]]; then

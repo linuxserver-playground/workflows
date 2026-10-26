@@ -71,7 +71,6 @@ jobs:
       push_images: ${{ steps.manifest.outputs.push_images }}
       image_path: ${{ steps.manifest.outputs.image_path }}
       description: ${{ steps.manifest.outputs.description }}
-      manifest_json: ${{ steps.manifest.outputs.manifest_json }}
       branch: ${{ steps.manifest.outputs.branch }}
       sha: ${{ steps.generated.outputs.checkout_sha }}
       sha7: ${{ steps.tags.outputs.sha7 }}
@@ -121,6 +120,15 @@ jobs:
         uses: ./.lsio-workflows/.github/actions/manifest
         with:
           builder_ref: ${{ inputs.builder_ref }}
+
+      # The manifest travels as an artifact, not a job output: the runner drops any output that happens
+      # to contain a masked value, and image.yml text can match one by chance (kimai did).
+      - name: Upload manifest
+        uses: actions/upload-artifact@v4
+        with:
+          name: manifest
+          path: ${{ steps.manifest.outputs.manifest_path }}
+          retention-days: 90
 
       - name: Resolve upstream version
         id: version
@@ -306,6 +314,12 @@ jobs:
           build_date: ${{ needs.prepare.outputs.build_date }}
           out_dir: out
 
+      - name: Download manifest
+        uses: actions/download-artifact@v5
+        with:
+          name: manifest
+          path: ${{ runner.temp }}/lsio
+
       - name: Test
         id: test
         uses: ./.lsio-workflows/.github/actions/test-arch
@@ -313,7 +327,7 @@ jobs:
           image: ${{ steps.build.outputs.image_ref }}
           arch: ${{ matrix.arch }}
           mode: ${{ needs.prepare.outputs.mode }}
-          manifest_json: ${{ needs.prepare.outputs.manifest_json }}
+          manifest: ${{ runner.temp }}/lsio/manifest.json
           previous_packages_url: ${{ needs.prepare.outputs.previous_tag && format('https://github.com/{0}/releases/download/{1}/package_versions.{2}.txt', github.repository, needs.prepare.outputs.previous_tag, matrix.arch) || '' }}
           ci_image: ${{ inputs.ci_image }}
           out_dir: out
@@ -397,13 +411,18 @@ jobs:
           path: out
           merge-multiple: true
 
+      - name: Download manifest
+        if: needs.prepare.result == 'success'
+        uses: actions/download-artifact@v5
+        with:
+          name: manifest
+          path: ${{ runner.temp }}/lsio
+
       - name: Write manifest.json
         if: needs.prepare.result == 'success'
         run: |
           mkdir -p out
-          printf '%s\n' "${MANIFEST_JSON}" > "${RUNNER_TEMP}/image.json"
-        env:
-          MANIFEST_JSON: ${{ needs.prepare.outputs.manifest_json }}
+          cp "${RUNNER_TEMP}/lsio/manifest.json" "${RUNNER_TEMP}/image.json"
 
       - name: Log in to GHCR
         if: steps.result.outputs.result == 'success' && env.PUSH == 'true'

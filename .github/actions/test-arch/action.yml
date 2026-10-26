@@ -9,8 +9,8 @@ inputs:
     required: true
   mode:
     required: true
-  manifest_json:
-    description: image.yml as compact JSON
+  manifest:
+    description: Path to image.yml as compact JSON (the prepare job's manifest artifact)
     required: true
   previous_packages_url:
     description: URL of the previous release's package_versions.<arch>.txt (optional)
@@ -46,7 +46,7 @@ runs:
         IMAGE: ${{ inputs.image }}
         ARCH: ${{ inputs.arch }}
         MODE: ${{ inputs.mode }}
-        MANIFEST_JSON: ${{ inputs.manifest_json }}
+        MANIFEST: ${{ inputs.manifest }}
         PREVIOUS_PACKAGES_URL: ${{ inputs.previous_packages_url }}
         CI_IMAGE: ${{ inputs.ci_image }}
         DUMPER_REPOSITORY: ${{ inputs.dumper_repository }}
