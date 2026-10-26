@@ -213,3 +213,20 @@ def test_publish_derives_the_record_before_the_release():
     assert all(s.get("continue-on-error") for s in record["runs"]["steps"] if s.get("shell"))
     assert "python3 -m builder record" in record["runs"]["steps"][-1]["run"]
     assert '"${BUNDLE_DIR}"/record.json' in (ROOT / ".github" / "actions" / "release" / "release.sh").read_text()
+
+
+def test_only_the_publish_job_writes_the_run_summary():
+    """The run page shows one summary box, which notifications link: steps collect notes in LSIO_SUMMARY."""
+    wf = load(ROOT / ".github" / "workflows" / "image-build.yml")
+    assert wf["env"]["LSIO_SUMMARY"] == "/dev/stdout"
+    assert wf["jobs"]["publish"]["env"]["LSIO_SUMMARY"].endswith("/.lsio-summary.md")
+    writers = [
+        (job, step.get("name"))
+        for job, spec in wf["jobs"].items()
+        for step in spec["steps"]
+        if "GITHUB_STEP_SUMMARY" in str(step.get("run", ""))
+    ]
+    assert writers == [("publish", "Job summary")]
+    for script in (ROOT / ".github" / "actions").glob("*/*.sh"):
+        text = script.read_text(encoding="utf-8")
+        assert '>> "${GITHUB_STEP_SUMMARY' not in text, script

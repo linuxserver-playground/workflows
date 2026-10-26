@@ -189,6 +189,23 @@ def test_compose_branch_build_summary() -> None:
     assert r.DEV_NOTE not in live
 
 
+def test_compose_leads_with_the_pull_command_screenshots_and_tests() -> None:
+    for ctx in (context(), context(mode="dev", published=True)):
+        body = r.compose(ctx)
+        order = [body.index(x) for x in ("docker pull", "amd64 screenshot", "| Test |", "| Arch | Digest |", "Package changes", "Container log on")]
+        assert order == sorted(order), ctx.mode
+
+
+def test_summary_writes_to_the_named_output(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    for key, value in {"GITHUB_REPOSITORY": REPO, "IMAGE_NAME": "example", "PRIMARY_TAG": "t", "IMAGE_PATH": "ghcr.io/x/y", "HEAD_SHA": SHA, "RUN_URL": "u", "MODE": "dev"}.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(tmp_path / "step.md"))
+    monkeypatch.delenv("ATTACHMENTS_TOKEN", raising=False)
+    monkeypatch.setattr(r, "gh_api", fake_api({}))
+    assert r.main(["summary", "--bundle", str(tmp_path), "--output", str(tmp_path / "report.md")]) == 0
+    assert (tmp_path / "report.md").read_text().startswith("### Build report for `example`") and not (tmp_path / "step.md").exists()
+
+
 def test_summary_appends_to_the_job_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
     bundle = tmp_path / "out"
     bundle.mkdir()

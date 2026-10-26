@@ -67,10 +67,13 @@ layers; about a minute, never fatal; CONVENTIONS §6), attests the index (live),
 GitHub Release on the branch (`target_commitish` is the branch name, CONVENTIONS §3) with the three-section
 notes and every bundle asset (`release`, live only), posts or updates the single PR comment (pr), POSTs the
 signed `build.summary` event to the control plane (`notify-control`, always; silent when `CONTROL_URL` is
-empty), writes the job summary, and finally fails if any job failed. On a branch or live build the job summary
-opens with the report a pull request gets as its comment (`scripts/pr_report.py summary`: tests per arch,
-screenshots, runtime, package changes against the release before it or the live branch's newest, log tails),
-since those builds have no pull request to comment on; it never fails the build. With `reason: packages` on a live
+empty), writes the job summary, and finally fails if any job failed. The job summary is the run page's only
+summary box (control's notifications link it as `#summary-<job id>`): the result, then, on a branch or live
+build, the report a pull request gets as its comment (`scripts/pr_report.py summary`: the pull command,
+screenshots and tests first, then runtime, package changes against the release before it or the live
+branch's newest, log tails; it never fails the build), then the build details collapsed. Steps write their
+notes to `LSIO_SUMMARY` (`summary` in `lib.sh`, `gha.summary`): a file the Publish job puts under the
+report, and the log in every other job. With `reason: packages` on a live
 branch the publish and release steps are replaced by `package-check` (below).
 
 ### Pull requests: the trusted half

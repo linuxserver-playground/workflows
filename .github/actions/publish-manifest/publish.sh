@@ -110,4 +110,4 @@ set_output published "$(printf '%s\n' "${published[@]}" | jq -R . | jq -sc .)"
   fi
   echo
   for p in "${published[@]}"; do echo "- \`${p}\`"; done
-} >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
+} >> "${LSIO_SUMMARY:-${GITHUB_STEP_SUMMARY:-/dev/stdout}}"

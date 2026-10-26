@@ -42,8 +42,9 @@ set_env() {
   } >> "${GITHUB_ENV:-/dev/stdout}"
 }
 
-# summary <markdown>: append to the job summary.
-summary() { echo "$*" >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"; }
+# summary <markdown>: append to LSIO_SUMMARY when the job collects its notes there (image builds: the Publish
+# job's last step puts them under its report, the other jobs send them to the log), else to the step summary.
+summary() { echo "$*" >> "${LSIO_SUMMARY:-${GITHUB_STEP_SUMMARY:-/dev/stdout}}"; }
 
 # rfc3339_now: build timestamp with offset, as the labels want it.
 rfc3339_now() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }

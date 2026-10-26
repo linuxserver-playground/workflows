@@ -5,7 +5,9 @@ report is the job summary of branch and live builds, which have no pull request 
 
     pr_report.py resolve                  which pull request and Build run this event is about (step outputs)
     pr_report.py comment --bundle DIR     compose the report, upload the screenshots, post or update the comment
-    pr_report.py summary --bundle DIR     compose the report of this run and append it to its job summary
+    pr_report.py summary --bundle DIR [--output FILE]
+                                          compose the report of this run for its job summary (appended to FILE,
+                                          by default the step's own summary)
 
 This runs from the generated pr-report.yml on workflow_run and pull_request_target, with the base repository's
 secrets and a write token. It never checks out or runs pull request code. The pull request and its run are found
@@ -276,6 +278,44 @@ def compose(ctx: Context) -> str:
         "",
     ]
 
+    # The image first: what to pull, and what to know before pulling it.
+    if ctx.mode != "pr":
+        if ctx.published:
+            lines += ["Pull the image:", "", code_block(f"docker pull {ctx.image_path}:{ctx.primary_tag}")]
+            if ctx.mode == "dev":
+                lines += ["", DEV_NOTE]
+        else:
+            lines.append("No image was published for this build.")
+    elif ctx.image_exists:
+        lines += ["Pull the quarantined image:", "", code_block(f"docker pull {ctx.image_path}:{ctx.primary_tag}"), "", WARNING]
+    elif ctx.fork and ctx.conclusion == "success" and not ctx.approved:
+        lines.append(
+            f"This pull request comes from a fork, so its image is published only after a maintainer adds the "
+            f"`{APPROVAL_LABEL}` label (a new push removes it). Until then it is the `image-<arch>` artifact of the run."
+        )
+    elif ctx.fork and ctx.approved and not ctx.published:
+        lines.append(f"`{APPROVAL_LABEL}` is set, but publishing the image failed; see the PR report run.")
+    else:
+        lines.append("No image was published for this build.")
+    lines.append("")
+
+    # Screenshots.
+    shots = [a for a in arches if ctx.arches[a].screenshot]
+    if shots:
+        urls = [a for a in shots if ctx.arches[a].screenshot_url]
+        if urls:
+            lines += ["| " + " | ".join(urls) + " |", "|" + " --- |" * len(urls)]
+            lines.append(
+                "| "
+                + " | ".join(f'<img src="{ctx.arches[a].screenshot_url}" width="420" alt="{a} screenshot">' for a in urls)
+                + " |"
+            )
+            lines.append("")
+        missing = [a for a in shots if not ctx.arches[a].screenshot_url]
+        if missing:
+            why = "uploads need the ATTACHMENTS_TOKEN secret" if not ctx.attachments else "the upload failed"
+            lines += [f"Screenshot for {', '.join(missing)} is in `test.<arch>.tar.gz` of the `{ctx.artifact_name}` artifact ({why}).", ""]
+
     # Tests: one row per test, one column per architecture.
     names: list[str] = []
     for a in arches:
@@ -297,23 +337,6 @@ def compose(ctx: Context) -> str:
         lines.append("")
     elif tests_ok or tests_bad or ctx.conclusion != "success":
         lines += ["The build produced no test reports; see the workflow run.", ""]
-
-    # Screenshots.
-    shots = [a for a in arches if ctx.arches[a].screenshot]
-    if shots:
-        urls = [a for a in shots if ctx.arches[a].screenshot_url]
-        if urls:
-            lines += ["| " + " | ".join(urls) + " |", "|" + " --- |" * len(urls)]
-            lines.append(
-                "| "
-                + " | ".join(f'<img src="{ctx.arches[a].screenshot_url}" width="420" alt="{a} screenshot">' for a in urls)
-                + " |"
-            )
-            lines.append("")
-        missing = [a for a in shots if not ctx.arches[a].screenshot_url]
-        if missing:
-            why = "uploads need the ATTACHMENTS_TOKEN secret" if not ctx.attachments else "the upload failed"
-            lines += [f"Screenshot for {', '.join(missing)} is in `test.<arch>.tar.gz` of the `{ctx.artifact_name}` artifact ({why}).", ""]
 
     # Platforms and what the container did at idle.
     platforms = {p.get("arch"): p for p in ctx.bundle.get("platforms") or [] if isinstance(p, dict)}
@@ -359,26 +382,7 @@ def compose(ctx: Context) -> str:
         if tail:
             lines += [f"<details><summary>Container log on {a} (last {LOG_TAIL} lines)</summary>", "", code_block(tail), "", "</details>", ""]
 
-    # The image.
-    if ctx.mode != "pr":
-        if ctx.published:
-            lines += ["Pull the image:", "", code_block(f"docker pull {ctx.image_path}:{ctx.primary_tag}")]
-            if ctx.mode == "dev":
-                lines += ["", DEV_NOTE]
-        else:
-            lines.append("No image was published for this build.")
-    elif ctx.image_exists:
-        lines += ["Pull the quarantined image:", "", code_block(f"docker pull {ctx.image_path}:{ctx.primary_tag}"), "", WARNING]
-    elif ctx.fork and ctx.conclusion == "success" and not ctx.approved:
-        lines.append(
-            f"This pull request comes from a fork, so its image is published only after a maintainer adds the "
-            f"`{APPROVAL_LABEL}` label (a new push removes it). Until then it is the `image-<arch>` artifact of the run."
-        )
-    elif ctx.fork and ctx.approved and not ctx.published:
-        lines.append(f"`{APPROVAL_LABEL}` is set, but publishing the image failed; see the PR report run.")
-    else:
-        lines.append("No image was published for this build.")
-    lines += ["", f"Everything the build wrote (`build.json`, test reports, SBOMs, file trees) is the `{ctx.artifact_name}` artifact of the run."]
+    lines += [f"Everything the build wrote (`build.json`, test reports, SBOMs, file trees) is the `{ctx.artifact_name}` artifact of the run."]
     return _fit("\n".join(lines) + "\n")
 
 
@@ -604,7 +608,7 @@ def cmd_comment(bundle_dir: Path) -> int:
     return 0
 
 
-def cmd_summary(bundle_dir: Path) -> int:
+def cmd_summary(bundle_dir: Path, output: str | None = None) -> int:
     """
     The report of a branch or live build, appended to the run's job summary. The run page is where control
     links a build that has no page on the website. It never fails the build: a missing piece only shrinks
@@ -639,7 +643,7 @@ def cmd_summary(bundle_dir: Path) -> int:
     except (RuntimeError, ValueError, KeyError) as err:
         print(f"::warning::the build report is missing parts: {err}")
     body = compose(ctx)
-    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    path = output or os.environ.get("GITHUB_STEP_SUMMARY")
     if path:
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(body + "\n")
@@ -652,8 +656,10 @@ def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("resolve")
-    for name in ("comment", "summary"):
-        sub.add_parser(name).add_argument("--bundle", type=Path, required=True)
+    sub.add_parser("comment").add_argument("--bundle", type=Path, required=True)
+    summary = sub.add_parser("summary")
+    summary.add_argument("--bundle", type=Path, required=True)
+    summary.add_argument("--output")
     args = parser.parse_args(argv)
     if args.command == "resolve":
         payload = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
@@ -662,7 +668,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"::notice::nothing to report: {result['reason']}")
         outputs(result)
         return 0
-    return cmd_comment(args.bundle) if args.command == "comment" else cmd_summary(args.bundle)
+    return cmd_comment(args.bundle) if args.command == "comment" else cmd_summary(args.bundle, args.output)
 
 
 if __name__ == "__main__":

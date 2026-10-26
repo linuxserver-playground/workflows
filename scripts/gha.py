@@ -40,7 +40,8 @@ def set_env(name: str, value: str) -> None:
 
 
 def summary(markdown: str) -> None:
-    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    """Append to LSIO_SUMMARY when the job collects its notes there (image builds), else to the step summary."""
+    path = os.environ.get("LSIO_SUMMARY") or os.environ.get("GITHUB_STEP_SUMMARY")
     if not path:
         sys.stdout.write(markdown + "\n")
         return

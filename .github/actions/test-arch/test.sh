@@ -77,7 +77,7 @@ set_output summary "${table}"
     echo "| --- | --- | --- |"
     echo "${table}"
   fi
-} >> "${GITHUB_STEP_SUMMARY:-/dev/stdout}"
+} >> "${LSIO_SUMMARY:-${GITHUB_STEP_SUMMARY:-/dev/stdout}}"
 
 if [[ "${rc}" != "0" ]]; then
   die "ci harness itself failed (exit ${rc})"

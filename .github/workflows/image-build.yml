@@ -45,6 +45,9 @@ on:
 env:
   WORKFLOWS_REPOSITORY: linuxserver-playground/workflows
   WORKFLOWS_PATH: .lsio-workflows
+  # Where steps put their summary notes. The run page shows one summary box, the Publish job's: it opens with
+  # the result and the build report, and the notes go under them. Every other job sends its notes to the log.
+  LSIO_SUMMARY: /dev/stdout
 
 jobs:
   prepare:
@@ -232,7 +235,7 @@ jobs:
             echo "| staging | \`${STAGING}\` |"
             [[ "${PACKAGE_CHECK}" == "true" ]] && echo "| package check | yes: compare and commit, no publish or release |"
             true
-          } >> "${GITHUB_STEP_SUMMARY}"
+          } >> "${LSIO_SUMMARY}"
         env:
           IMAGE_PATH: ${{ steps.manifest.outputs.image_path }}
           MODE: ${{ steps.manifest.outputs.mode }}
@@ -378,6 +381,7 @@ jobs:
       MODE: ${{ needs.prepare.outputs.mode }}
       PUSH: ${{ needs.prepare.outputs.push_images }}
       PACKAGE_CHECK: ${{ needs.prepare.outputs.package_check }}
+      LSIO_SUMMARY: ${{ github.workspace }}/.lsio-summary.md
     steps:
       - name: Determine result
         id: result
@@ -590,14 +594,59 @@ jobs:
           release_url: ${{ steps.release.outputs.release_url }}
           artifact_url: ${{ steps.artifact.outputs.artifact-url }}
 
-      - name: Build report
-        # The report a pull request gets as a comment, as the job summary of a branch or live build: control's
-        # notifications link the run for every build that has no page on the website. Screenshots need
-        # ATTACHMENTS_TOKEN.
-        if: always() && env.MODE != 'pr' && needs.prepare.result == 'success'
-        continue-on-error: true
-        run: python3 "${WORKFLOWS_PATH}/scripts/pr_report.py" summary --bundle out
+      - name: Job summary
+        # The run's one summary box, which notifications link (#summary-<job id>): the result, then the report a
+        # pull request gets as its comment (a pr build has the comment instead; screenshots need
+        # ATTACHMENTS_TOKEN), then the details the steps above collected in LSIO_SUMMARY.
+        if: always()
+        run: |
+          set -uo pipefail
+          report="${RUNNER_TEMP}/build-report.md"
+          if [[ "${MODE}" != "pr" && "${PREPARE}" == "success" ]]; then
+            python3 "${WORKFLOWS_PATH}/scripts/pr_report.py" summary --bundle out --output "${report}" \
+              || echo "::warning::the build report could not be written"
+          fi
+          {
+            echo "## Result: ${RESULT}"
+            echo
+            if [[ -n "${FAILED_JOB}" ]]; then echo "Failed job: \`${FAILED_JOB}\`"; echo; fi
+            if [[ -s "${report}" ]]; then cat "${report}"; echo; fi
+            echo "<details><summary>Build details</summary>"
+            echo
+            if [[ "${PACKAGE_CHECK}" == "true" ]]; then
+              if [[ "${CHANGED}" == "true" ]]; then
+                echo "Package check: packages changed, release build triggered by commit \`${COMMIT_SHA}\`"
+              else
+                echo "Package check: packages unchanged"
+              fi
+              echo
+            fi
+            if [[ -n "${RELEASE_URL}" ]]; then echo "Release: ${RELEASE_URL}"; echo; fi
+            if [[ -n "${ARTIFACT_URL}" ]]; then echo "Bundle artifact: ${ARTIFACT_URL}"; echo; fi
+            if [[ -n "${STAGING}" && "${STAGING}" != "{}" ]]; then
+              echo "Staging references (not for use, removed after 7 days): \`${STAGING}\`"
+              echo
+            fi
+            if [[ -s "${LSIO_SUMMARY}" ]]; then cat "${LSIO_SUMMARY}"; echo; fi
+            if [[ -f out/build.json ]]; then
+              echo "build.json:"
+              echo
+              echo '```json'
+              head -c 60000 out/build.json
+              echo
+              echo '```'
+            fi
+            echo "</details>"
+          } >> "${GITHUB_STEP_SUMMARY}"
         env:
+          RESULT: ${{ steps.outcome.outputs.result }}
+          FAILED_JOB: ${{ steps.outcome.outputs.failed_job }}
+          PREPARE: ${{ needs.prepare.result }}
+          RELEASE_URL: ${{ steps.release.outputs.release_url }}
+          ARTIFACT_URL: ${{ steps.artifact.outputs.artifact-url }}
+          STAGING: ${{ needs.prepare.outputs.staging_refs }}
+          CHANGED: ${{ steps.packages.outputs.changed }}
+          COMMIT_SHA: ${{ steps.packages.outputs.commit_sha }}
           GH_TOKEN: ${{ github.token }}
           ATTACHMENTS_TOKEN: ${{ secrets.ATTACHMENTS_TOKEN }}
           IMAGE_NAME: ${{ needs.prepare.outputs.name }}
@@ -609,44 +658,6 @@ jobs:
           PUBLISHED: ${{ steps.manifest.outcome == 'success' }}
           BASE_REF: ${{ needs.prepare.outputs.release_branch }}
           BASE_TAG: ${{ env.MODE == 'live' && needs.prepare.outputs.previous_tag || '' }}
-
-      - name: Job summary
-        if: always()
-        run: |
-          {
-            echo "## Result: ${RESULT}"
-            echo
-            [[ -n "${FAILED_JOB}" ]] && echo "Failed job: \`${FAILED_JOB}\`"
-            if [[ "${PACKAGE_CHECK}" == "true" ]]; then
-              if [[ "${CHANGED}" == "true" ]]; then
-                echo "Package check: packages changed, release build triggered by commit \`${COMMIT_SHA}\`"
-              else
-                echo "Package check: packages unchanged"
-              fi
-            fi
-            [[ -n "${RELEASE_URL}" ]] && echo "Release: ${RELEASE_URL}"
-            [[ -n "${INDEX_DIGEST}" ]] && echo "Index digest: \`${INDEX_DIGEST}\`"
-            [[ -n "${ARTIFACT_URL}" ]] && echo "Bundle artifact: ${ARTIFACT_URL}"
-            [[ -n "${STAGING}" && "${STAGING}" != "{}" ]] && echo "Staging references (not for use, removed after 7 days): \`${STAGING}\`"
-            if [[ -f out/build.json ]]; then
-              echo
-              echo "<details><summary>build.json</summary>"
-              echo
-              echo '```json'
-              head -c 60000 out/build.json
-              echo '```'
-              echo "</details>"
-            fi
-          } >> "${GITHUB_STEP_SUMMARY}"
-        env:
-          RESULT: ${{ steps.outcome.outputs.result }}
-          FAILED_JOB: ${{ steps.outcome.outputs.failed_job }}
-          RELEASE_URL: ${{ steps.release.outputs.release_url }}
-          INDEX_DIGEST: ${{ steps.manifest.outputs.index_digest }}
-          ARTIFACT_URL: ${{ steps.artifact.outputs.artifact-url }}
-          STAGING: ${{ needs.prepare.outputs.staging_refs }}
-          CHANGED: ${{ steps.packages.outputs.changed }}
-          COMMIT_SHA: ${{ steps.packages.outputs.commit_sha }}
 
       - name: Fail if any job failed
         # "skipped" is the successful outcome of a package check that found no change.
