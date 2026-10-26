@@ -51,13 +51,15 @@ rfc3339_now() { date -u '+%Y-%m-%dT%H:%M:%SZ'; }
 # retry_ghcr <command...>: run a registry-touching command, retrying on rate
 # limits with exponential backoff and jitter. Modelled on the Jenkinsfile's
 # function of the same name: any failure that does not look like a rate limit
-# is returned immediately.
+# is returned immediately. RETRY_ALSO adds one more error pattern to retry on.
 retry_ghcr() {
   local max_attempts="${RETRY_MAX_ATTEMPTS:-7}"
   local base_delay="${RETRY_BASE_DELAY:-10}"
   local max_delay="${RETRY_MAX_DELAY:-90}"
   local attempt=1
   local errfile exit_code delay pause
+  local retry_on='retry-after:|toomanyrequests|too many requests|429 Too Many|rate limit|403 Forbidden|^denied$'
+  retry_on+="${RETRY_ALSO:+|${RETRY_ALSO}}"
   errfile=$(mktemp)
   while true; do
     # Run inside an if so a caller's set -e cannot abort before we get to retry. stderr is teed into
@@ -81,7 +83,7 @@ retry_ghcr() {
     # the loser's manifest PUT is refused for a few seconds while GHCR grants the repository access.
     # Only registry wording counts: a bare "429" also matches the digests BuildKit prints, which once retried a
     # deterministic build failure seven times.
-    elif ! grep -q -i -E "retry-after:|toomanyrequests|too many requests|429 Too Many|rate limit|403 Forbidden|^denied$" "${errfile}"; then
+    elif ! grep -q -i -E "${retry_on}" "${errfile}"; then
       rm -f "${errfile}"
       return "${exit_code}"
     elif (( attempt >= max_attempts )); then

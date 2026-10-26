@@ -349,3 +349,22 @@ def test_release_accepts_an_existing_tag_at_the_same_commit_only(env, tmp_path):
     proc = run(CREATE_RELEASE, env, "t-ls1", SHA, "main", "o/r", str(notes), extra=extra)
     assert proc.returncode != 0 and "never moves" in proc.stdout
     assert "release create" not in Path(extra["GH_LOG"]).read_text()
+
+
+def _retry(env: dict, tmp_path: Path, error: str, also: str | None) -> tuple[int, int]:
+    """retry_ghcr over a command that fails once with `error`: (exit code, attempts made)."""
+    count = tmp_path / "attempts"
+    count.write_text("")
+    flaky = f'echo x >> {count}; [[ $(wc -l < {count}) -gt 1 ]] || {{ echo "{error}" >&2; exit 1; }}'
+    run_env = {**env, **({"RETRY_ALSO": also} if also else {})}
+    proc = subprocess.run(["bash", "-c", f'source "{ROOT}/scripts/lib.sh"; retry_ghcr bash -c \'{flaky}\''], env=run_env, capture_output=True, text=True)
+    return proc.returncode, len(count.read_text().splitlines())
+
+
+def test_retry_ghcr_retries_rate_limits_and_returns_other_errors_at_once(env, tmp_path):
+    assert _retry(env, tmp_path, "toomanyrequests: slow down", None) == (0, 2)
+    assert _retry(env, tmp_path, "Error response from daemon: manifest unknown", None) == (1, 1)
+
+
+def test_retry_ghcr_retries_the_extra_pattern_it_is_given(env, tmp_path):
+    assert _retry(env, tmp_path, "Error response from daemon: manifest unknown", "manifest unknown") == (0, 2)

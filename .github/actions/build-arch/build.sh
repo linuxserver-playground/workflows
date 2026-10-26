@@ -95,8 +95,9 @@ start=${SECONDS}
 if [[ "${PUSH}" == "true" ]]; then
   retry_ghcr docker buildx build --no-cache --pull --platform "${platform}" -f "${built_dockerfile}" \
     "${args[@]}" --provenance=mode=max --sbom=false --push -t "${remote_ref}" --metadata-file "${meta}" .
-  # Test against exactly what was pushed.
-  retry_ghcr docker pull --platform "${platform}" "${remote_ref}"
+  # Test against exactly what was pushed. GHCR can answer "manifest unknown" for a few seconds after the
+  # push it just accepted, so that is retried here too.
+  RETRY_ALSO="manifest unknown" retry_ghcr docker pull --platform "${platform}" "${remote_ref}"
   image_ref="${remote_ref}"
 else
   docker buildx build --no-cache --pull --platform "${platform}" -f "${built_dockerfile}" \
