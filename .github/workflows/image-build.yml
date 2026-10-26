@@ -479,6 +479,17 @@ jobs:
           site_url: ${{ vars.SITE_URL }}
           builder_ref: ${{ inputs.builder_ref }}
 
+      - name: Derive record.json
+        # What the hub stores about this build, computed here where the SBOMs, test reports and previous release
+        # are at hand (CONVENTIONS §6): the hub ingests the release from build.json and this file alone. About a
+        # minute (most of it grype), and never a reason to fail the build.
+        id: record
+        if: steps.bundle.outcome == 'success' && env.PACKAGE_CHECK != 'true'
+        uses: ./.lsio-workflows/.github/actions/record
+        with:
+          out_dir: out
+          previous_tag: ${{ needs.prepare.outputs.previous_tag }}
+
       - name: Release (live)
         id: release
         if: steps.result.outputs.result == 'success' && env.PUSH == 'true' && env.MODE == 'live' && env.PACKAGE_CHECK != 'true'

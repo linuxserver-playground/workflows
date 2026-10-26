@@ -83,7 +83,8 @@ fi
 group "Uploading bundle assets"
 assets=("${BUNDLE_DIR}/build.json")
 for f in "${BUNDLE_DIR}"/packages.*.json.gz "${BUNDLE_DIR}"/layers.*.json "${BUNDLE_DIR}"/files.*.json.gz \
-         "${BUNDLE_DIR}"/test.*.json "${BUNDLE_DIR}"/test.*.tar.gz "${BUNDLE_DIR}"/package_versions.*.txt; do
+         "${BUNDLE_DIR}"/test.*.json "${BUNDLE_DIR}"/test.*.tar.gz "${BUNDLE_DIR}"/package_versions.*.txt \
+         "${BUNDLE_DIR}"/record.json; do
   [[ -f "${f}" ]] && assets+=("${f}")
 done
 retry 3 15 gh release upload "${TAG}" "${assets[@]}" --repo "${REPOSITORY}" --clobber

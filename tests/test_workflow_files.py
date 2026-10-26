@@ -16,7 +16,7 @@ ACTIONS = sorted((ROOT / ".github" / "actions").glob("*/action.yml"))
 TEMPLATES = sorted((ROOT / "templates").glob("*.yml"))
 ALL_YAML = WORKFLOWS + ACTIONS + TEMPLATES
 
-EXPECTED_ACTIONS = {"free-disk", "manifest", "resolve-version", "next-tag", "build-arch", "test-arch", "publish-manifest", "emit-bundle", "release", "notify-control", "package-check"}
+EXPECTED_ACTIONS = {"free-disk", "manifest", "resolve-version", "next-tag", "build-arch", "test-arch", "publish-manifest", "emit-bundle", "record", "release", "notify-control", "package-check"}
 CLOSED_PR = "github.event_name == 'pull_request' && github.event.action == 'closed'"
 ALLOWED_REGISTRIES = re.compile(r"ghcr\.io/(linuxserver-playground/|linuxserver/baseimage-)")
 FORBIDDEN = re.compile(r"docker\.io|hub\.docker\.com|registry\.gitlab\.com|quay\.io|s3://|scarf|discord", re.IGNORECASE)
@@ -200,3 +200,16 @@ def test_fixture_manifest_valid_and_s6_executable():
     run = ROOT / "fixtures" / "example-image" / "root" / "etc" / "s6-overlay" / "s6-rc.d" / "init-example-config" / "run"
     assert run.stat().st_mode & 0o111
     assert (ROOT / "fixtures" / "example-image" / "Dockerfile").read_text().splitlines()[2] == "FROM ghcr.io/linuxserver/baseimage-alpine:3.22"
+
+
+def test_publish_derives_the_record_before_the_release():
+    wf = load(ROOT / ".github" / "workflows" / "image-build.yml")
+    names = [s.get("name") for s in wf["jobs"]["publish"]["steps"]]
+    assert names.index("Emit build.json") < names.index("Derive record.json") < names.index("Release (live)")
+    step = _steps(wf, "publish")["record"]
+    assert step["uses"] == "./.lsio-workflows/.github/actions/record"
+    assert step["with"]["previous_tag"] == "${{ needs.prepare.outputs.previous_tag }}"
+    record = load(ROOT / ".github" / "actions" / "record" / "action.yml")
+    assert all(s.get("continue-on-error") for s in record["runs"]["steps"] if s.get("shell"))
+    assert "python3 -m builder record" in record["runs"]["steps"][-1]["run"]
+    assert '"${BUNDLE_DIR}"/record.json' in (ROOT / ".github" / "actions" / "release" / "release.sh").read_text()

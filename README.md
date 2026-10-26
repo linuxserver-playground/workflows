@@ -32,7 +32,7 @@ are the control plane's job.
 flowchart LR
   P[prepare<br/>manifest · resolve-version · next-tag<br/>render or check · shellcheck · s6 bits<br/>tag set · staging refs] --> A1[arch amd64<br/>free-disk · build-arch → build/ staging · test-arch]
   P --> A2[arch arm64<br/>free-disk · build-arch → build/ staging · test-arch]
-  A1 --> U[publish<br/>publish-manifest from staging · emit-bundle<br/>release or package-check · notify-control]
+  A1 --> U[publish<br/>publish-manifest from staging · emit-bundle · record<br/>release or package-check · notify-control]
   A2 --> U
   U -. workflow_run .-> R[pr-report.yml, trusted<br/>report comment · fork image after approval<br/>delete untrusted-pr/… pr-N-* on close]
 ```
@@ -61,7 +61,9 @@ registry, so a run that fails anywhere leaves every released tag untouched). Bef
 packages-only `sbom.<arch>.spdx.json` from the ci run is added to the staging reference's attestation manifest
 next to the provenance (`scripts/attach_sbom.py`, in BuildKit's in-toto layout), so every released tag carries
 it and `docker buildx imagetools inspect --format '{{json .SBOM}}'` shows it. It then writes and validates
-`build.json` (`emit-bundle`), attests the index (live), creates the git tag at the built commit and the
+`build.json` (`emit-bundle`), derives `record.json` from the bundle files (`record`: `builder record` with the
+package tables, the diff against the previous release, a grype scan of both architectures and the base image's
+layers; about a minute, never fatal; CONVENTIONS §6), attests the index (live), creates the git tag at the built commit and the
 GitHub Release on the branch (`target_commitish` is the branch name, CONVENTIONS §3) with the three-section
 notes and every bundle asset (`release`, live only), posts or updates the single PR comment (pr), POSTs the
 signed `build.summary` event to the control plane (`notify-control`, always; silent when `CONTROL_URL` is
@@ -271,6 +273,7 @@ All pinned by major tag:
 
 - `actions/checkout@v5`
 - `actions/upload-artifact@v4`
+- `actions/cache@v4`
 - `actions/download-artifact@v5`
 - `actions/setup-python@v5`
 - `actions/attest-build-provenance@v2`
