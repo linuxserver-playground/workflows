@@ -22,6 +22,9 @@ inputs:
   fork:
     description: Whether the pull request head is a fork (no secrets, no pushes)
     default: ${{ github.event.pull_request.head.repo.fork == true }}
+  default_branch:
+    description: The repository's default branch, whose image.yml lists every live branch's tag
+    default: ${{ github.event.repository.default_branch }}
 
 outputs:
   name: { value: "${{ steps.plan.outputs.name }}" }
@@ -73,12 +76,30 @@ runs:
       env:
         MANIFEST: ${{ inputs.manifest }}
 
+    - name: Read the default branch's manifest
+      id: default
+      if: inputs.event_name != 'pull_request' && inputs.event_name != 'pull_request_target' && inputs.default_branch != '' && inputs.ref_name != inputs.default_branch
+      shell: bash
+      run: |
+        set -euo pipefail
+        path="${RUNNER_TEMP}/lsio-default-image.yml"
+        if gh api "repos/${REPOSITORY}/contents/image.yml?ref=${DEFAULT_BRANCH}" -H "Accept: application/vnd.github.raw" > "${path}"; then
+          echo "path=${path}" >> "${GITHUB_OUTPUT}"
+        else
+          echo "::warning::could not read image.yml on ${DEFAULT_BRANCH}; not checking that it lists this branch's tag"
+        fi
+      env:
+        GH_TOKEN: ${{ github.token }}
+        REPOSITORY: ${{ inputs.repository }}
+        DEFAULT_BRANCH: ${{ inputs.default_branch }}
+
     - name: Plan
       id: plan
       shell: bash
       run: |
         set -euo pipefail
         python3 "${GITHUB_ACTION_PATH}/manifest.py" \
+          --default-manifest "${DEFAULT_MANIFEST}" \
           --manifest "${MANIFEST}" \
           --event-name "${EVENT_NAME}" \
           --ref-name "${REF_NAME}" \
@@ -95,3 +116,4 @@ runs:
         SHA: ${{ inputs.sha }}
         PR_NUMBER: ${{ inputs.pr_number }}
         FORK: ${{ inputs.fork }}
+        DEFAULT_MANIFEST: ${{ steps.default.outputs.path }}

@@ -138,6 +138,47 @@ def test_manifest_cli_writes_outputs(tmp_path, monkeypatch, capsys):
     assert "manifest_path<<" in text
 
 
+def branch_manifest(branch: str, tag: str) -> dict:
+    m = fixture_manifest()
+    m["release"].update(branch=branch, tag=tag, channel="prerelease")
+    return m
+
+
+def test_unlisted_live_branch_is_refused():
+    """baseimage-debian's bookworm released, but master's release.tags did not list it: the hub rejected it."""
+    default = fixture_manifest()
+    problem = manifest_action.unlisted_live_tag(branch_manifest("bookworm", "bookworm"), default, "live")
+    assert problem and problem.startswith("branch bookworm publishes tag bookworm, but release.tags in image.yml on main")
+    default["release"]["tags"].append({"tag": "bookworm", "description": "Debian Bookworm"})
+    assert manifest_action.unlisted_live_tag(branch_manifest("bookworm", "bookworm"), default, "live") is None
+    # brave publishes origin from borigin: the tag, not the branch name, must be listed.
+    default["release"]["tags"].append({"tag": "origin", "description": "Origin channel"})
+    assert manifest_action.unlisted_live_tag(branch_manifest("borigin", "origin"), default, "live") is None
+
+
+def test_unlisted_check_only_applies_to_live_builds_of_other_branches():
+    default = fixture_manifest()
+    assert manifest_action.unlisted_live_tag(default, default, "live") is None
+    assert manifest_action.unlisted_live_tag(branch_manifest("bookworm", "bookworm"), default, "dev") is None
+
+
+def test_manifest_cli_fails_an_unlisted_live_branch(tmp_path, monkeypatch, capsys):
+    import yaml
+
+    monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "out.txt"))
+    monkeypatch.delenv("GITHUB_STEP_SUMMARY", raising=False)
+    branch = tmp_path / "image.yml"
+    branch.write_text(yaml.safe_dump(branch_manifest("bookworm", "bookworm")))
+    args = ["--manifest", str(branch), "--event-name", "push", "--repository", "o/docker-example", "--sha", SHA]
+    default = ["--default-manifest", str(FIXTURE / "image.yml")]
+    assert manifest_action.main([*args, "--ref-name", "bookworm", *default]) == 1
+    assert "::error title=Live branch not listed::branch bookworm publishes tag bookworm" in capsys.readouterr().out
+    assert not (tmp_path / "out.txt").exists()
+    # A dev build of the same branch name, and no default manifest at all, both plan as before.
+    assert manifest_action.main([*args, "--ref-name", "bookworm-wip", *default]) == 0
+    assert manifest_action.main([*args, "--ref-name", "bookworm", "--default-manifest", ""]) == 0
+
+
 # -------------------------------------------------------------------------------------------- staging references
 
 

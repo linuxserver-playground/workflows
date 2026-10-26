@@ -8,6 +8,10 @@ Also decides the build mode (CONVENTIONS §2/§4):
   dev   anything else
 and whether images may be pushed (not for pull requests from forks, which run without secrets).
 
+A live build of a branch other than the default fails here when the default branch's release.tags does not list its
+tag (--default-manifest): control and the hub find live branches through that list, so the release would get no
+website page and no scheduled checks.
+
 Usage: manifest.py --manifest image.yml --event-name push --ref-name master --repository owner/docker-x \
           --sha <40 hex> [--pr-number N] [--fork true|false] [--work-dir DIR]
 """
@@ -37,6 +41,22 @@ def detect_mode(event_name: str, ref_name: str, release_branch: str) -> str:
     if ref_name == release_branch:
         return "live"
     return "dev"
+
+
+def unlisted_live_tag(manifest: dict[str, Any], default: dict[str, Any], mode: str) -> str | None:
+    """Why this live build of a non-default branch must not release, or None when its tag is listed."""
+    release, default_release = manifest["release"], default["release"]
+    if mode != "live" or release["branch"] == default_release["branch"]:
+        return None
+    listed = {str(default_release["tag"])} | {str(t["tag"]) for t in default_release.get("tags") or []}
+    if str(release["tag"]) in listed:
+        return None
+    return (
+        f"branch {release['branch']} publishes tag {release['tag']}, but release.tags in image.yml on "
+        f"{default_release['branch']} does not list it. Control and the hub find live branches through that list, "
+        f"so this release would get no website page and no scheduled checks. Add {release['tag']} to release.tags on "
+        f"{default_release['branch']}, or change release.branch here to stop releasing from this branch."
+    )
 
 
 def first_sentence(summary: str) -> str:
@@ -124,9 +144,17 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--pr-number", default="")
     ap.add_argument("--fork", default="false")
     ap.add_argument("--work-dir", default="", help="where manifest.json is written")
+    ap.add_argument("--default-manifest", default="", help="the default branch's image.yml, when this is another branch")
     args = ap.parse_args(argv)
     path = Path(args.manifest)
     manifest = resolve_version.load_manifest(path)
+    if args.default_manifest:
+        mode = detect_mode(args.event_name, args.ref_name, manifest["release"]["branch"])
+        problem = unlisted_live_tag(manifest, resolve_version.load_manifest(Path(args.default_manifest)), mode)
+        if problem:
+            print(f"::error title=Live branch not listed::{problem}")
+            gha.summary(f"**Not released:** {problem}")
+            return 1
     out = compute(
         manifest,
         event_name=args.event_name,
