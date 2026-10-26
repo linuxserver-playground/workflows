@@ -15,6 +15,7 @@ import os
 import subprocess
 import sys
 import urllib.parse
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from typing import Any
 
@@ -77,6 +78,37 @@ def _json(notes: dict[str, Any], version: str) -> dict[str, str]:
     return {"text": rv.run_jq(notes["jq"], resp.body), "url": url}
 
 
+def _version_spellings(version: str) -> list[str]:
+    """9.17.0 -> 9.17.0, 9.17; v1.2.0 -> v1.2.0, 1.2.0, v1.2, 1.2: feeds title releases the way the project says them."""
+    out: list[str] = []
+    for v in (version, version[1:] if version[:1] in ("v", "V") else version):
+        while True:
+            if v not in out:
+                out.append(v)
+            if not v.endswith(".0") or v.count(".") < 2:
+                break
+            v = v[:-2]
+    return out
+
+
+def _rss(notes: dict[str, Any], version: str) -> dict[str, str]:
+    """The description of the feed item titled after the version: usually HTML, kept verbatim (the site sanitises)."""
+    url = notes["url"].replace("${VERSION}", version)
+    resp = rv.http_get(url)
+    if resp.status != 200:
+        return {"text": "", "url": url}
+    try:
+        root = ET.fromstring(resp.body)
+    except ET.ParseError:
+        return {"text": "", "url": url}
+    wanted = {notes["title"].replace("${VERSION}", v).replace("$VERSION", v).strip() for v in _version_spellings(version)}
+    for item in root.iter("item"):
+        if (item.findtext("title") or "").strip() in wanted:
+            link = (item.findtext("link") or "").strip()
+            return {"text": (item.findtext("description") or "").strip(), "url": link if link.startswith("http") else url}
+    return {"text": "", "url": url}
+
+
 def _command(notes: dict[str, Any], version: str) -> dict[str, str]:
     env = {**os.environ, "VERSION": version}
     proc = subprocess.run(["bash", "-o", "pipefail", "-c", notes["run"]], capture_output=True, text=True, check=False, env=env)
@@ -101,6 +133,8 @@ def fetch_notes(manifest: dict[str, Any], version: str) -> dict[str, str]:
         return _gitlab_commit(notes, version)
     if kind == "json":
         return _json(notes, version)
+    if kind == "rss":
+        return _rss(notes, version)
     if kind == "command":
         return _command(notes, version)
     raise rv.ResolveError(f"unknown notes type {kind!r}")
