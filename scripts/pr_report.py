@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-The trusted half of a pull request build: the report comment, written from the base repository.
+The trusted half of a pull request build: the report comment, written from the base repository. The same
+report is the job summary of branch and live builds, which have no pull request to comment on.
 
     pr_report.py resolve                  which pull request and Build run this event is about (step outputs)
     pr_report.py comment --bundle DIR     compose the report, upload the screenshots, post or update the comment
+    pr_report.py summary --bundle DIR     compose the report of this run and append it to its job summary
 
 This runs from the generated pr-report.yml on workflow_run and pull_request_target, with the base repository's
 secrets and a write token. It never checks out or runs pull request code. The pull request and its run are found
@@ -54,6 +56,7 @@ WARNING = (
     "> This image is an **unreviewed pull request build**, published under the `untrusted-pr` namespace. "
     "It is not for production use, never receives a `latest` tag and is deleted when the pull request closes."
 )
+DEV_NOTE = "A branch build, published under the `dev` namespace: unreviewed, and kept for 30 days."
 
 Json = dict[str, Any]
 
@@ -200,6 +203,8 @@ class Context:
     base_release: str = ""
     base_packages: dict[str, dict[str, str]] = field(default_factory=dict)
     attachments: bool = False
+    mode: str = "pr"
+    """`pr` for the pull request comment; `dev` or `live` for the job summary of a branch or live build."""
 
 
 def load_arch(bundle_dir: Path, arch: str) -> ArchData | None:
@@ -255,7 +260,7 @@ def compose(ctx: Context) -> str:
     else:
         verdict = "**Build failed**"
     lines = [
-        MARKER,
+        *([MARKER] if ctx.mode == "pr" else []),
         f"### Build report for {code(ctx.image)} · {code(ctx.primary_tag)}",
         "",
         " · ".join(
@@ -355,7 +360,14 @@ def compose(ctx: Context) -> str:
             lines += [f"<details><summary>Container log on {a} (last {LOG_TAIL} lines)</summary>", "", code_block(tail), "", "</details>", ""]
 
     # The image.
-    if ctx.image_exists:
+    if ctx.mode != "pr":
+        if ctx.published:
+            lines += ["Pull the image:", "", code_block(f"docker pull {ctx.image_path}:{ctx.primary_tag}")]
+            if ctx.mode == "dev":
+                lines += ["", DEV_NOTE]
+        else:
+            lines.append("No image was published for this build.")
+    elif ctx.image_exists:
         lines += ["Pull the quarantined image:", "", code_block(f"docker pull {ctx.image_path}:{ctx.primary_tag}"), "", WARNING]
     elif ctx.fork and ctx.conclusion == "success" and not ctx.approved:
         lines.append(
@@ -530,6 +542,38 @@ def env_flag(name: str) -> bool:
     return os.environ.get(name, "").strip().lower() == "true"
 
 
+def load_bundle(ctx: Context, bundle_dir: Path) -> None:
+    bundle = read_json(bundle_dir / "build.json")
+    ctx.bundle = bundle if isinstance(bundle, dict) else {}
+    for arch in ARCHES:
+        data = load_arch(bundle_dir, arch)
+        if data:
+            ctx.arches[arch] = data
+
+
+def load_base_packages(ctx: Context, release: Json | None) -> None:
+    """The package tables of the release the report compares against."""
+    if not release:
+        return
+    ctx.base_release = str(release.get("tag_name", ""))
+    assets = {a.get("name"): a.get("browser_download_url") for a in release.get("assets") or []}
+    for arch in ctx.arches:
+        url = assets.get(f"package_versions.{arch}.txt")
+        content = fetch(url) if url else None
+        if content is not None:
+            ctx.base_packages[arch] = parse_table(content)
+
+
+def upload_screenshots(ctx: Context, repo: str) -> None:
+    token = os.environ.get("ATTACHMENTS_TOKEN", "").strip()
+    ctx.attachments = bool(token)
+    if token and any(data.screenshot for data in ctx.arches.values()):
+        repository_id = int(gh_api([f"repos/{repo}"])["id"])
+        for arch, data in ctx.arches.items():
+            if data.screenshot:
+                data.screenshot_url = upload_attachment(token, repository_id, f"{ctx.primary_tag}-{arch}.png", data.screenshot)
+
+
 def cmd_comment(bundle_dir: Path) -> int:
     repo = os.environ["GITHUB_REPOSITORY"]
     pr = int(os.environ["PR"])
@@ -546,31 +590,10 @@ def cmd_comment(bundle_dir: Path) -> int:
         image_exists=False,
         base_ref=os.environ.get("BASE_REF", ""),
     )
-    bundle = read_json(bundle_dir / "build.json")
-    ctx.bundle = bundle if isinstance(bundle, dict) else {}
-    for arch in ARCHES:
-        data = load_arch(bundle_dir, arch)
-        if data:
-            ctx.arches[arch] = data
+    load_bundle(ctx, bundle_dir)
     ctx.image_exists = (not ctx.fork or ctx.published) and image_exists(f"{ctx.image_path}:{ctx.primary_tag}")
-
-    release = base_release(repo, ctx.base_ref) if ctx.base_ref else None
-    if release:
-        ctx.base_release = str(release.get("tag_name", ""))
-        assets = {a.get("name"): a.get("browser_download_url") for a in release.get("assets") or []}
-        for arch in ctx.arches:
-            url = assets.get(f"package_versions.{arch}.txt")
-            content = fetch(url) if url else None
-            if content is not None:
-                ctx.base_packages[arch] = parse_table(content)
-
-    token = os.environ.get("ATTACHMENTS_TOKEN", "").strip()
-    ctx.attachments = bool(token)
-    if token:
-        repository_id = int(gh_api([f"repos/{repo}"])["id"])
-        for arch, data in ctx.arches.items():
-            if data.screenshot:
-                data.screenshot_url = upload_attachment(token, repository_id, f"{ctx.primary_tag}-{arch}.png", data.screenshot)
+    load_base_packages(ctx, base_release(repo, ctx.base_ref) if ctx.base_ref else None)
+    upload_screenshots(ctx, repo)
 
     body = compose(ctx)
     try:
@@ -581,12 +604,56 @@ def cmd_comment(bundle_dir: Path) -> int:
     return 0
 
 
+def cmd_summary(bundle_dir: Path) -> int:
+    """
+    The report of a branch or live build, appended to the run's job summary. The run page is where control
+    links a build that has no page on the website. It never fails the build: a missing piece only shrinks
+    the report.
+    """
+    repo = os.environ["GITHUB_REPOSITORY"]
+    ctx = Context(
+        image=os.environ["IMAGE_NAME"],
+        primary_tag=os.environ["PRIMARY_TAG"],
+        image_path=os.environ["IMAGE_PATH"],
+        head_sha=os.environ["HEAD_SHA"],
+        run_url=os.environ["RUN_URL"],
+        conclusion=os.environ.get("CONCLUSION", "unknown"),
+        fork=False,
+        approved=False,
+        published=env_flag("PUBLISHED"),
+        image_exists=False,
+        base_ref=os.environ.get("BASE_REF", ""),
+        mode=os.environ.get("MODE", "dev"),
+    )
+    load_bundle(ctx, bundle_dir)
+    # A live build compares against the release before it (the newest one may be its own); a branch build
+    # against the newest release of the live branch it was made from.
+    base_tag = os.environ.get("BASE_TAG", "")
+    try:
+        if base_tag:
+            release = gh_api([f"repos/{repo}/releases/tags/{urllib.parse.quote(base_tag, safe='')}"])
+        else:
+            release = base_release(repo, ctx.base_ref) if ctx.base_ref else None
+        load_base_packages(ctx, release)
+        upload_screenshots(ctx, repo)
+    except (RuntimeError, ValueError, KeyError) as err:
+        print(f"::warning::the build report is missing parts: {err}")
+    body = compose(ctx)
+    path = os.environ.get("GITHUB_STEP_SUMMARY")
+    if path:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(body + "\n")
+    else:
+        print(body)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__.split("\n\n")[0])
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("resolve")
-    comment = sub.add_parser("comment")
-    comment.add_argument("--bundle", type=Path, required=True)
+    for name in ("comment", "summary"):
+        sub.add_parser(name).add_argument("--bundle", type=Path, required=True)
     args = parser.parse_args(argv)
     if args.command == "resolve":
         payload = json.loads(Path(os.environ["GITHUB_EVENT_PATH"]).read_text(encoding="utf-8"))
@@ -595,7 +662,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"::notice::nothing to report: {result['reason']}")
         outputs(result)
         return 0
-    return cmd_comment(args.bundle)
+    return cmd_comment(args.bundle) if args.command == "comment" else cmd_summary(args.bundle)
 
 
 if __name__ == "__main__":

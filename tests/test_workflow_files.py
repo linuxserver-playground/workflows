@@ -47,7 +47,7 @@ def test_image_build_contract():
     assert inputs["reason"]["default"] == "push"
     assert inputs["workflows_ref"]["default"] == "v1"
     assert inputs["ci_image"]["default"] == "ghcr.io/linuxserver-playground/ci:latest"
-    assert set(wf[True]["workflow_call"]["secrets"]) == {"CONTROL_URL", "CONTROL_EVENTS_SECRET"}
+    assert set(wf[True]["workflow_call"]["secrets"]) == {"CONTROL_URL", "CONTROL_EVENTS_SECRET", "ATTACHMENTS_TOKEN"}
     assert all(not v.get("required") for v in wf[True]["workflow_call"]["secrets"].values())
     assert list(wf["jobs"]) == ["prepare", "arch", "publish"]
     arch = wf["jobs"]["arch"]

@@ -176,6 +176,60 @@ def test_compose_fits_the_comment_limit() -> None:
     assert len(body) <= r.MAX_BODY and "left out to fit" in body and "docker pull" in body
 
 
+
+def test_compose_branch_build_summary() -> None:
+    ctx = context(mode="dev", published=True, image_path="ghcr.io/linuxserver-playground/dev/example", primary_tag="feature-0123456")
+    body = r.compose(ctx)
+    assert not body.startswith(r.MARKER) and "### Build report for `example` · `feature-0123456`" in body
+    assert "| Container startup | pass · init done after 2.0s | pass |" in body and "amd64 screenshot" in body
+    assert "docker pull ghcr.io/linuxserver-playground/dev/example:feature-0123456" in body and r.DEV_NOTE in body
+    assert "untrusted-pr" not in body and "safe-to-publish" not in body
+    live = r.compose(context(mode="live", published=False, conclusion="failure"))
+    assert "**Tests failed** on amd64" not in live and "No image was published for this build." in live
+    assert r.DEV_NOTE not in live
+
+
+def test_summary_appends_to_the_job_summary(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> None:
+    bundle = tmp_path / "out"
+    bundle.mkdir()
+    (bundle / "build.json").write_text('{"version": {"upstream": "1.2.3"}}')
+    (bundle / "test.amd64.json").write_text('{"success": true, "tests": [{"name": "Container startup", "status": "PASS"}]}')
+    (bundle / "package_versions.amd64.txt").write_text("NAME VERSION TYPE\nbash 5.3 apk\n")
+    summary = tmp_path / "summary.md"
+    summary.write_text("before\n")
+    env = {
+        "GITHUB_REPOSITORY": REPO,
+        "GITHUB_STEP_SUMMARY": str(summary),
+        "IMAGE_NAME": "example",
+        "PRIMARY_TAG": "1.2.3-ls4",
+        "IMAGE_PATH": "ghcr.io/linuxserver-playground/example",
+        "HEAD_SHA": SHA,
+        "RUN_URL": "https://github.com/x/actions/runs/1",
+        "CONCLUSION": "success",
+        "PUBLISHED": "true",
+        "MODE": "live",
+        "BASE_REF": "main",
+        "BASE_TAG": "1.2.3-ls3",
+    }
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    monkeypatch.delenv("ATTACHMENTS_TOKEN", raising=False)
+    release = {"tag_name": "1.2.3-ls3", "assets": [{"name": "package_versions.amd64.txt", "browser_download_url": "https://x/p.txt"}]}
+    monkeypatch.setattr(r, "gh_api", fake_api({f"repos/{REPO}/releases/tags/1.2.3-ls3": release}))
+    monkeypatch.setattr(r, "fetch", lambda url, cap=r.MAX_TABLE: "NAME VERSION TYPE\nbash 5.2 apk\n")
+    assert r.main(["summary", "--bundle", str(bundle)]) == 0
+    text = summary.read_text()
+    assert text.startswith("before\n### Build report for `example` · `1.2.3-ls4`")
+    assert "**Build and tests passed**" in text and "against `1.2.3-ls3`: 1" in text and "~ bash 5.2 -> 5.3" in text
+    assert "docker pull ghcr.io/linuxserver-playground/example:1.2.3-ls4" in text
+
+    # GitHub failing mid-way only shrinks the report.
+    monkeypatch.setattr(r, "gh_api", fake_api({}))
+    summary.write_text("")
+    assert r.main(["summary", "--bundle", str(bundle)]) == 0
+    assert "Build and tests passed" in summary.read_text() and "Package changes" not in summary.read_text()
+
+
 # ------------------------------------------------------------------------------------------------ resolve
 
 

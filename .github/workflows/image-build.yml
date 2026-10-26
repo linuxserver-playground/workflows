@@ -39,6 +39,8 @@ on:
         required: false
       CONTROL_EVENTS_SECRET:
         required: false
+      ATTACHMENTS_TOKEN:
+        required: false
 
 env:
   WORKFLOWS_REPOSITORY: linuxserver-playground/workflows
@@ -587,6 +589,26 @@ jobs:
           reason: ${{ env.MODE == 'pr' && 'pull_request' || inputs.reason }}
           release_url: ${{ steps.release.outputs.release_url }}
           artifact_url: ${{ steps.artifact.outputs.artifact-url }}
+
+      - name: Build report
+        # The report a pull request gets as a comment, as the job summary of a branch or live build: control's
+        # notifications link the run for every build that has no page on the website. Screenshots need
+        # ATTACHMENTS_TOKEN.
+        if: always() && env.MODE != 'pr' && needs.prepare.result == 'success'
+        continue-on-error: true
+        run: python3 "${WORKFLOWS_PATH}/scripts/pr_report.py" summary --bundle out
+        env:
+          GH_TOKEN: ${{ github.token }}
+          ATTACHMENTS_TOKEN: ${{ secrets.ATTACHMENTS_TOKEN }}
+          IMAGE_NAME: ${{ needs.prepare.outputs.name }}
+          PRIMARY_TAG: ${{ needs.prepare.outputs.primary_tag }}
+          IMAGE_PATH: ${{ needs.prepare.outputs.image_path }}
+          HEAD_SHA: ${{ needs.prepare.outputs.checkout_sha }}
+          RUN_URL: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+          CONCLUSION: ${{ steps.outcome.outputs.result == 'skipped' && 'success' || steps.outcome.outputs.result }}
+          PUBLISHED: ${{ steps.manifest.outcome == 'success' }}
+          BASE_REF: ${{ needs.prepare.outputs.release_branch }}
+          BASE_TAG: ${{ env.MODE == 'live' && needs.prepare.outputs.previous_tag || '' }}
 
       - name: Job summary
         if: always()

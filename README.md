@@ -67,7 +67,10 @@ layers; about a minute, never fatal; CONVENTIONS §6), attests the index (live),
 GitHub Release on the branch (`target_commitish` is the branch name, CONVENTIONS §3) with the three-section
 notes and every bundle asset (`release`, live only), posts or updates the single PR comment (pr), POSTs the
 signed `build.summary` event to the control plane (`notify-control`, always; silent when `CONTROL_URL` is
-empty), writes the job summary, and finally fails if any job failed. With `reason: packages` on a live
+empty), writes the job summary, and finally fails if any job failed. On a branch or live build the job summary
+opens with the report a pull request gets as its comment (`scripts/pr_report.py summary`: tests per arch,
+screenshots, runtime, package changes against the release before it or the live branch's newest, log tails),
+since those builds have no pull request to comment on; it never fails the build. With `reason: packages` on a live
 branch the publish and release steps are replaced by `package-check` (below).
 
 ### Pull requests: the trusted half
@@ -212,7 +215,8 @@ jobs:
 Inputs: `reason` (`push`, `upstream`, `packages`, `rebuild`, `manual`; see "Reasons"), `workflows_ref` (must
 match the ref in `uses:`; the composite actions are checked out from it), `ci_image`, `builder_image` (empty
 skips templating), `builder_ref`. Secrets (organisation level, absent in forks, all optional): `CONTROL_URL`,
-`CONTROL_EVENTS_SECRET`. `GITHUB_TOKEN` is enough for GHCR, Releases and the two bot commits. `pr-report.yml`
+`CONTROL_EVENTS_SECRET`, `ATTACHMENTS_TOKEN` (screenshots in the job summary's report). `GITHUB_TOKEN` is
+enough for GHCR, Releases and the two bot commits. `pr-report.yml`
 takes `ATTACHMENTS_TOKEN` (screenshot uploads) and `PACKAGES_TOKEN` (only for deleting the images of closed
 pull requests when `GITHUB_TOKEN` may not).
 
