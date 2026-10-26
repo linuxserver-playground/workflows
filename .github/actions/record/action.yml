@@ -48,7 +48,7 @@ runs:
       # One entry a day per repository. An older one is restored when today's is missing; `builder record`
       # updates a database more than 30 hours old before it scans, and the post step saves the updated one.
       if: steps.grype.outcome == 'success'
-      uses: actions/cache@v4
+      uses: actions/cache@v6
       with:
         path: ~/.cache/grype/db
         key: grype-db-${{ steps.grype.outputs.date }}

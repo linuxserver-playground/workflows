@@ -276,16 +276,17 @@ only caller today.
 
 ## Third-party actions
 
-All pinned by major tag:
+All pinned by major tag, every one on the Node 24 runtime:
 
 - `actions/checkout@v5`
-- `actions/upload-artifact@v4`
-- `actions/cache@v4`
-- `actions/download-artifact@v5`
-- `actions/setup-python@v5`
-- `actions/attest-build-provenance@v2`
-- `docker/setup-buildx-action@v3`
-- `docker/login-action@v3`
+- `actions/upload-artifact@v7`
+- `actions/cache@v6`
+- `actions/download-artifact@v8` (a digest mismatch fails the download)
+- `actions/setup-python@v7`
+- `actions/attest-build-provenance@v4` (with `create-storage-record: false`: a storage record needs
+  `artifact-metadata: write` from every caller)
+- `docker/setup-buildx-action@v4`
+- `docker/login-action@v4`
 
 ## Developing
 

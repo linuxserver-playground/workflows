@@ -80,7 +80,7 @@ jobs:
 
       - name: Log in to GHCR
         if: steps.pr.outputs.action == 'report'
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -88,7 +88,7 @@ jobs:
 
       - name: Set up buildx
         if: steps.pr.outputs.publish == 'true'
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Ensure the approval label exists
         if: steps.pr.outputs.fork == 'true'

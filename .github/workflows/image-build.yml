@@ -130,7 +130,7 @@ jobs:
       # The manifest travels as an artifact, not a job output: the runner drops any output that happens
       # to contain a masked value, and image.yml text can match one by chance (kimai did).
       - name: Upload manifest
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: manifest
           path: ${{ steps.manifest.outputs.manifest_path }}
@@ -286,11 +286,11 @@ jobs:
         uses: ./.lsio-workflows/.github/actions/free-disk
 
       - name: Set up buildx
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Log in to GHCR
         if: needs.prepare.outputs.push_images == 'true'
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -321,7 +321,7 @@ jobs:
           out_dir: out
 
       - name: Download manifest
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           name: manifest
           path: ${{ runner.temp }}/lsio
@@ -340,7 +340,7 @@ jobs:
 
       - name: Upload bundle files
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bundle-${{ matrix.arch }}
           path: |
@@ -351,7 +351,7 @@ jobs:
 
       - name: Upload image (not pushed)
         if: always() && needs.prepare.outputs.push_images != 'true' && hashFiles(format('out/image.{0}.tar.gz', matrix.arch)) != ''
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: image-${{ matrix.arch }}
           path: out/image.${{ matrix.arch }}.tar.gz
@@ -412,7 +412,7 @@ jobs:
 
       - name: Download bundle files
         if: needs.prepare.result == 'success'
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           pattern: bundle-*
           path: out
@@ -420,7 +420,7 @@ jobs:
 
       - name: Download manifest
         if: needs.prepare.result == 'success'
-        uses: actions/download-artifact@v5
+        uses: actions/download-artifact@v8
         with:
           name: manifest
           path: ${{ runner.temp }}/lsio
@@ -433,7 +433,7 @@ jobs:
 
       - name: Log in to GHCR
         if: steps.result.outputs.result == 'success' && env.PUSH == 'true'
-        uses: docker/login-action@v3
+        uses: docker/login-action@v4
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
@@ -441,7 +441,7 @@ jobs:
 
       - name: Set up buildx
         if: steps.result.outputs.result == 'success' && env.PUSH == 'true'
-        uses: docker/setup-buildx-action@v3
+        uses: docker/setup-buildx-action@v4
 
       - name: Publish tags
         id: manifest
@@ -460,12 +460,14 @@ jobs:
 
       - name: Attest provenance (live)
         if: steps.result.outputs.result == 'success' && env.PUSH == 'true' && env.MODE == 'live' && env.PACKAGE_CHECK != 'true'
-        uses: actions/attest-build-provenance@v2
+        uses: actions/attest-build-provenance@v4
         continue-on-error: true
         with:
           subject-name: ${{ needs.prepare.outputs.image_path }}
           subject-digest: ${{ steps.manifest.outputs.index_digest }}
           push-to-registry: true
+          # v4 also writes an artifact storage record, which needs artifact-metadata: write from every caller
+          create-storage-record: false
 
       - name: Emit build.json
         id: bundle
@@ -569,7 +571,7 @@ jobs:
       - name: Upload bundle
         id: artifact
         if: always() && needs.prepare.result == 'success' && hashFiles('out/**') != ''
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: bundle
           path: |
