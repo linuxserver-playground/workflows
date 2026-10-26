@@ -367,14 +367,15 @@ def _os(manifest_dir: Path) -> tuple[str, str]:
     return "none", "none"
 
 
-SIGPIPE_EXIT = 141
+# A reader such as `head -1` or `grep -m 1` that stops early closes the pipe: most writers then die of SIGPIPE
+# (141), and curl, which ignores the signal, exits 23 (write error). The output stands, as it did when Jenkins
+# ran these commands without pipefail.
+CLOSED_PIPE_EXITS = (141, 23)
 
 
 def _command(src: dict[str, Any]) -> tuple[str, str]:
     proc = subprocess.run(["bash", "-o", "pipefail", "-c", src["run"]], capture_output=True, text=True, check=False, env=os.environ.copy())
-    # 141 is SIGPIPE: a reader such as `head -1` or `grep -m 1` stopped early and closed the pipe. The output
-    # stands, as it did when Jenkins ran these commands without pipefail.
-    if proc.returncode not in (0, SIGPIPE_EXIT):
+    if proc.returncode not in (0, *CLOSED_PIPE_EXITS):
         raise ResolveError(f"command source failed ({proc.returncode}): {proc.stderr.strip()}")
     lines = [line for line in proc.stdout.splitlines() if line.strip()]
     if not lines:

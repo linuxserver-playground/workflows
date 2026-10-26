@@ -304,6 +304,10 @@ def test_command_source_survives_sigpipe():
     # `yes | head -1` exits 141 under pipefail once head closes the pipe; the line printed is the version.
     assert rv.resolve(manifest({"type": "command", "run": "yes 2.0.1 | head -n 1"}))["upstream"] == "2.0.1"
 
+def test_command_source_survives_curl_write_error():
+    # curl ignores SIGPIPE and exits 23 when grep -m 1 closes the pipe (webgrabplus).
+    assert rv.resolve(manifest({"type": "command", "run": "(printf '5.3.0\\n'; exit 23) | head -n 1"}))["upstream"] == "5.3.0"
+
 
 def test_unknown_type():
     with pytest.raises(rv.ResolveError):

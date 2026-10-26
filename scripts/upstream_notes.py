@@ -80,7 +80,7 @@ def _json(notes: dict[str, Any], version: str) -> dict[str, str]:
 def _command(notes: dict[str, Any], version: str) -> dict[str, str]:
     env = {**os.environ, "VERSION": version}
     proc = subprocess.run(["bash", "-o", "pipefail", "-c", notes["run"]], capture_output=True, text=True, check=False, env=env)
-    return {"text": proc.stdout if proc.returncode in (0, rv.SIGPIPE_EXIT) else "", "url": "command"}
+    return {"text": proc.stdout if proc.returncode in (0, *rv.CLOSED_PIPE_EXITS) else "", "url": "command"}
 
 
 def fetch_notes(manifest: dict[str, Any], version: str) -> dict[str, str]:
