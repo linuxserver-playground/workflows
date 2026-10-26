@@ -14,6 +14,11 @@ Prints JSON: {"ls_build": N, "previous_tag": "...", "previous_ls_build": M,
 release of the branch not made from this commit: what the build's record.json diffs against.
 
 Releases are read with ``gh api --paginate``; ``pick`` is pure and unit-tested with fixtures.
+
+On the branch that publishes ``latest`` (unprefixed tags), the other live branches' tags keep their releases out:
+those named in ``--other-tags`` (the manifest's ``release.tags``) and those of every other branch whose own image.yml
+names it in ``release.branch``. A branch is live before the README advertises it, so ``release.tags`` alone would let
+master claim ``romm-1.0-ls1``.
 """
 
 from __future__ import annotations
@@ -23,6 +28,7 @@ import json
 import re
 import subprocess
 import sys
+import urllib.parse
 from typing import Any
 
 
@@ -40,6 +46,37 @@ def list_releases(repo: str) -> list[dict[str, Any]]:
     for page in pages:
         releases.extend(page)
     return releases
+
+
+def gh(path: str, *args: str) -> str | None:
+    proc = subprocess.run(["gh", "api", *args, path], capture_output=True, text=True, check=False)
+    return proc.stdout if proc.returncode == 0 else None
+
+
+def live_sibling_tags(repo: str, branch: str) -> list[str]:
+    """Tags of the repo's other live branches: every branch whose own image.yml names it in release.branch."""
+    try:
+        import yaml  # noqa: PLC0415 - installed with the builder by the manifest step; never fail a build on it
+    except ImportError:
+        print("warning: PyYAML missing; only release.tags keeps other branches' releases out", file=sys.stderr)
+        return []
+    listing = gh(f"repos/{repo}/branches?per_page=100", "--paginate", "--jq", ".[].name")
+    if listing is None:
+        print("warning: could not list branches; only release.tags keeps other branches' releases out", file=sys.stderr)
+        return []
+    tags: list[str] = []
+    for name in listing.split():
+        if name == branch:
+            continue
+        ref = urllib.parse.quote(name, safe="")
+        text = gh(f"repos/{repo}/contents/image.yml?ref={ref}", "-H", "Accept: application/vnd.github.raw")
+        try:
+            release = (yaml.safe_load(text) or {}).get("release") or {} if text else {}
+        except yaml.YAMLError:
+            continue
+        if isinstance(release, dict) and release.get("branch") == name and release.get("tag"):
+            tags.append(str(release["tag"]))
+    return tags
 
 
 def tag_pattern(release_tag: str) -> re.Pattern[str]:
@@ -125,6 +162,7 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--other-tags", default="", help="comma separated tags of the other live branches")
     ap.add_argument("--head-tags", default=None, help="comma separated tags pointing at HEAD (default: git)")
     ap.add_argument("--releases-json", default=None, help="read releases from this file instead of gh (tests)")
+    ap.add_argument("--no-siblings", action="store_true", help="do not read the other branches' image.yml (tests)")
     args = ap.parse_args(argv)
 
     if args.releases_json:
@@ -134,6 +172,8 @@ def main(argv: list[str]) -> int:
         releases = list_releases(args.repo)
     head_tags = args.head_tags.split(",") if args.head_tags is not None else head_tags_from_git()
     other = [t.strip() for t in args.other_tags.split(",") if t.strip()]
+    if args.release_tag == "latest" and not args.no_siblings:
+        other += [t for t in live_sibling_tags(args.repo, args.branch) if t not in other]
     print(json.dumps(pick(releases, args.release_tag, args.branch, other, head_tags)))
     return 0
 

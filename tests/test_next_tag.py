@@ -72,7 +72,7 @@ def test_drafts_and_foreign_branches_ignored():
 
 
 def test_cli_with_fixture_file(capsys):
-    rc = next_tag.main(["--repo", "o/r", "--branch", "master", "--release-tag", "latest", "--other-tags", "latest,develop", "--head-tags", "", "--releases-json", str(FIXTURE)])
+    rc = next_tag.main(["--repo", "o/r", "--branch", "master", "--release-tag", "latest", "--other-tags", "latest,develop", "--head-tags", "", "--releases-json", str(FIXTURE), "--no-siblings"])
     assert rc == 0
     assert json.loads(capsys.readouterr().out)["ls_build"] == 3
 
@@ -97,3 +97,61 @@ def test_package_change_commit_moves_head_so_the_follow_up_build_gets_n_plus_one
     follow_up = next_tag.pick(rels, "latest", "master", other_tags=["develop"], head_tags=[])
     assert follow_up["ls_build"] == 3 and follow_up["previous_tag"] == "4.0.20.3014-ls2"
     assert follow_up["head_already_released"] is False
+
+
+def fake_gh(files: dict[str, str | None]):
+    """gh api as live_sibling_tags calls it: the branch listing, then image.yml per branch."""
+    calls: list[str] = []
+
+    def gh(path: str, *args: str) -> str | None:
+        calls.append(path)
+        if "/branches" in path:
+            return "\n".join(files) + "\n"
+        ref = path.split("?ref=")[1]
+        return files.get(ref)
+
+    return gh, calls
+
+
+def test_live_sibling_tags_reads_each_branchs_own_manifest(monkeypatch):
+    gh, calls = fake_gh({
+        "master": "release: {branch: master, tag: latest}\n",
+        "romm": "release: {branch: romm, tag: romm}\n",  # live, not yet in master's release.tags
+        "borigin": "release: {branch: borigin, tag: origin}\n",  # the tag is not the branch name
+        "feature/x": "release: {branch: master, tag: latest}\n",  # a dev branch: its image.yml names master
+        "docs": None,  # no image.yml
+        "broken": "release: [\n",
+    })
+    monkeypatch.setattr(next_tag, "gh", gh)
+    assert next_tag.live_sibling_tags("o/docker-webstation", "master") == ["romm", "origin"]
+    assert "repos/o/docker-webstation/contents/image.yml?ref=feature%2Fx" in calls
+    assert "repos/o/docker-webstation/contents/image.yml?ref=master" not in calls
+
+
+def test_unadvertised_branch_releases_are_not_claimed_by_latest(monkeypatch, tmp_path, capsys):
+    """webstation's romm released romm-1.0-ls1 before master's release.tags listed romm."""
+    gh, _ = fake_gh({"master": "release: {branch: master, tag: latest}\n", "romm": "release: {branch: romm, tag: romm}\n"})
+    monkeypatch.setattr(next_tag, "gh", gh)
+    releases = tmp_path / "releases.json"
+    releases.write_text(json.dumps([
+        {"tag_name": "romm-1.0-ls1", "target_commitish": "a" * 40},
+        {"tag_name": "2.5.0-ls7", "target_commitish": "b" * 40},
+    ]))
+    args = ["--repo", "o/docker-webstation", "--branch", "master", "--release-tag", "latest", "--other-tags", "latest", "--head-tags", "", "--releases-json", str(releases)]
+    assert next_tag.main(args) == 0
+    assert json.loads(capsys.readouterr().out)["previous_tag"] == "2.5.0-ls7"
+    # Without the siblings master would have taken romm's release for its own.
+    assert next_tag.main([*args, "--no-siblings"]) == 0
+    assert json.loads(capsys.readouterr().out)["previous_tag"] == "romm-1.0-ls1"
+
+
+def test_prefixed_branches_do_not_look_for_siblings(monkeypatch, capsys):
+    monkeypatch.setattr(next_tag, "gh", lambda *a: (_ for _ in ()).throw(AssertionError("no gh call")))
+    args = ["--repo", "o/r", "--branch", "develop", "--release-tag", "develop", "--head-tags", "", "--releases-json", str(FIXTURE)]
+    assert next_tag.main(args) == 0
+
+
+def test_branch_listing_failure_falls_back_to_release_tags(monkeypatch, capsys):
+    monkeypatch.setattr(next_tag, "gh", lambda *a: None)
+    assert next_tag.live_sibling_tags("o/r", "master") == []
+    assert "could not list branches" in capsys.readouterr().err
