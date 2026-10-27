@@ -309,6 +309,49 @@ def test_command_source_survives_curl_write_error():
     assert rv.resolve(manifest({"type": "command", "run": "(printf '5.3.0\\n'; exit 23) | head -n 1"}))["upstream"] == "5.3.0"
 
 
+def test_combined_joins_its_parts_after_their_own_transforms(http):
+    http(
+        {
+            "https://api.github.com/repos/moby/moby/releases": (
+                200,
+                [
+                    {"tag_name": "api/v1.52.0", "draft": False, "prerelease": False},
+                    {"tag_name": "docker-v29.9.2", "draft": False, "prerelease": False},
+                ],
+            ),
+            "https://api.github.com/repos/docker/compose/releases": (
+                200,
+                [{"tag_name": "v5.6.1", "draft": False, "prerelease": False, "html_url": "c"}],
+            ),
+        }
+    )
+    source = {
+        "type": "combined",
+        "sources": [
+            {
+                "type": "github_release",
+                "repo": "moby/moby",
+                "exclude": "^(?!docker-)",
+                "transform": [{"regex": "^docker-v", "replace": ""}],
+            },
+            {"type": "github_release", "repo": "docker/compose", "transform": [{"regex": "^v", "replace": ""}]},
+        ],
+    }
+    out = rv.resolve(manifest(source))
+    assert out["upstream"] == "29.9.2-5.6.1"
+    assert out["source"] == "combined"
+    assert out["source_url"] == "https://github.com/moby/moby/releases/tag/docker-v29.9.2"
+    joined = rv.resolve(manifest({**source, "separator": "_", "transform": [{"regex": "_", "replace": "+"}]}))
+    assert joined["upstream"] == "29.9.2+5.6.1" and joined["upstream_clean"] == "29.9.25.6.1"
+
+
+def test_combined_fails_when_a_part_is_empty(http):
+    http({"https://api.github.com/repos/o/r/commits/main": (200, {"sha": ""})})
+    source = {"type": "combined", "sources": [{"type": "github_commit", "repo": "o/r", "branch": "main"}]}
+    with pytest.raises(rv.ResolveError, match="combined part github_commit"):
+        rv.resolve(manifest(source))
+
+
 def test_unknown_type():
     with pytest.raises(rv.ResolveError):
         rv.resolve(manifest({"type": "carrier_pigeon"}))
