@@ -21,7 +21,7 @@ are the control plane's job.
 | `.github/workflows/cleanup-staging.yml` | Weekly deletion of `build/*` staging images older than 7 days (runs in this repo). |
 | `.github/workflows/ci.yml` | Checks of this repository. |
 | `.github/actions/<name>/` | Composite actions; the logic lives in the script beside each `action.yml`. |
-| `scripts/` | Shared code: `lib.sh` (bash helpers, `retry_ghcr`), `resolve_version.py`, `next_tag.py`, `tags.py`, `package_versions.py`, `upstream_notes.py`, `attach_sbom.py`, `pr_report.py`, `publish_pr_image.sh`, `pr_cleanup.py`, `cleanup_staging.py`, the prepare-job scripts, `check.sh`. |
+| `scripts/` | Shared code: `lib.sh` (bash helpers, `retry_ghcr`), `resolve_version.py`, `mod_version.py`, `next_tag.py`, `tags.py`, `package_versions.py`, `upstream_notes.py`, `attach_sbom.py`, `pr_report.py`, `publish_pr_image.sh`, `pr_cleanup.py`, `cleanup_staging.py`, the prepare-job scripts, `check.sh`. |
 | `templates/build.yml`, `templates/pr-report.yml` | The caller files the builder renders into image repos. |
 | `fixtures/example-image/` | A minimal valid image repository for integration runs. |
 | `tests/` | pytest over every Python script plus static checks of the YAML. |
@@ -248,7 +248,7 @@ Exit codes of the CLI: 0 resolved, 1 error, 3 assets not ready (try later).
 
 ## Mods
 
-`mod-build.yml` (inputs `name`, `target`, `multi_arch`, `mod_version`) builds a `docker-mods` branch named
+`mod-build.yml` (inputs `name`, `target`, `multi_arch`, `mod_version`, `mod_line`) builds a `docker-mods` branch named
 `<target>-<name>` and pushes `ghcr.io/linuxserver-playground/mods:<target>-<name>` and `:<target>-<name>-<sha7>`
 (plus `-<version>` variants) on push to that branch, and
 `ghcr.io/linuxserver-playground/untrusted-pr/mods:<target>-<name>-pr-<n>` for pull requests. arm64 is built
@@ -260,6 +260,14 @@ characters of CONVENTIONS §3 removed) is the `mod_version` input when given; th
 check passes the version it resolved. Without one, a mod whose `mod.yml` has an `upstream` block resolves it
 with `scripts/resolve_version.py` in the plan job, so a push builds the same version the scheduler would have.
 A failed lookup is a warning and the build goes on without `MOD_VERSION` (the Dockerfile's own lookup).
+
+A mod whose upstream ships several version lines lists them in `mod.yml` `upstream.lines` (CONVENTIONS §3).
+`mod_line` names the line to build (empty: the default line, `upstream.version`); `scripts/mod_version.py`
+resolves that line unless `mod_version` is given and works out its floating tags (`tags`: `major` and `minor`,
+`-X` and `-X.Y` of `X.Y.Z`). A line's build pushes `-<version>`, `-<version>-<sha7>` and those tags, never the
+bare `<target>-<name>` or `-<sha7>`, and stages its per-arch images under its version tag, so it can never move
+what the default line published. The branch's `build.yml` passes its `line` dispatch input through; only a mod
+with lines has it (`builder render-mod`).
 
 ## Known limits
 

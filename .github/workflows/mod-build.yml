@@ -3,7 +3,10 @@ name: Mod build
 # Shared build for linuxserver-playground/docker-mods branches. Each mod branch is named
 # <target>-<name> (the base image it targets and the mod name) and carries a Dockerfile and mod.yml.
 # Images go to GHCR only:
-#   push to branch <target>-<name>  ghcr.io/<org>/mods:<target>-<name> and :<target>-<name>-<sha>
+#   push to branch <target>-<name>  ghcr.io/<org>/mods:<target>-<name> and :<target>-<name>-<sha>, plus
+#                                   :<target>-<name>-<version>[-<sha>] when mod.yml has an upstream block
+#   dispatch with mod_line          one of mod.yml's upstream.lines: :<target>-<name>-<version>[-<sha>] and
+#                                   the line's tags, never :<target>-<name>
 #   pull_request                    ghcr.io/<org>/untrusted-pr/mods:<target>-<name>-pr-<n>
 # arm64 is built natively on ubuntu-24.04-arm when multi_arch is true.
 
@@ -24,6 +27,10 @@ on:
         default: false
       mod_version:
         description: Optional MOD_VERSION build arg, also published as an extra tag; empty resolves mod.yml's upstream block
+        type: string
+        default: ""
+      mod_line:
+        description: Version line to build, a name from mod.yml upstream.lines; empty is the default line
         type: string
         default: ""
       workflows_ref:
@@ -69,33 +76,12 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          if [[ -n "${INPUT_VERSION}" ]]; then
-            echo "MOD_VERSION ${INPUT_VERSION} (input)"
-            echo "mod_version=${INPUT_VERSION}" >> "${GITHUB_OUTPUT}"
-            exit 0
-          fi
           python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --quiet --user pyyaml
-          python3 - <<'PY'
-          import os, sys, yaml
-          sys.path.insert(0, os.path.join(os.environ["WORKFLOWS_PATH"], "scripts"))
-          import resolve_version as rv
-          mod = yaml.safe_load(open("mod.yml")) or {}
-          upstream = mod.get("upstream") or {}
-          if not upstream.get("version"):
-              print("no upstream block in mod.yml; the Dockerfile's own lookup applies")
-              sys.exit(0)
-          manifest = {"upstream": upstream, "build": {"platforms": mod.get("platforms") or ["amd64", "arm64"]}}
-          try:
-              result = rv.resolve(manifest)
-          except rv.ResolveError as exc:
-              print(f"::warning file=mod.yml::upstream version not resolved ({exc}); building without MOD_VERSION")
-              sys.exit(0)
-          print(f"MOD_VERSION {result['upstream']} from {result['source_url']}")
-          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
-              out.write(f"mod_version={result['upstream']}\n")
-          PY
+          python3 "${WORKFLOWS_PATH}/scripts/mod_version.py" mod.yml \
+            --version "${INPUT_VERSION}" --line "${INPUT_LINE}" --output "${GITHUB_OUTPUT}"
         env:
           INPUT_VERSION: ${{ inputs.mod_version }}
+          INPUT_LINE: ${{ inputs.mod_line }}
           GITHUB_TOKEN: ${{ github.token }}
 
       - name: Plan
@@ -115,12 +101,22 @@ jobs:
           elif [[ "${GITHUB_REF_NAME}" == "${base_tag}" ]]; then
             mode="live"
             image_path="ghcr.io/${org}/mods"
-            primary="${base_tag}"
-            tags="[\"${base_tag}\",\"${base_tag}-${sha7}\"]"
-            # The version as a tag: CONVENTIONS §3's characters removed, as the scheduler does before it looks.
-            version_tag="${MOD_VERSION//[~,%@+;:\/ ]/}"
-            if [[ -n "${version_tag}" ]]; then
-              tags="[\"${base_tag}\",\"${base_tag}-${sha7}\",\"${base_tag}-${version_tag}\",\"${base_tag}-${version_tag}-${sha7}\"]"
+            # VERSION_TAG is the version with CONVENTIONS §3's characters removed, as the scheduler looks it up;
+            # ALIASES the line's floating tag suffixes (mod.yml `tags`). The default line also moves the bare tag;
+            # another line never does, and builds under its version tag so the per-arch tags stay apart.
+            if [[ -n "${LINE}" ]]; then
+              if [[ -z "${VERSION_TAG}" ]]; then
+                echo "::error file=mod.yml::line ${LINE} has no version to build; a line never builds without one"
+                exit 1
+              fi
+              primary="${base_tag}-${VERSION_TAG}"
+              tags=$(jq -cn --arg b "${base_tag}" --arg v "${VERSION_TAG}" --arg s "${sha7}" --argjson a "${ALIASES}" \
+                '[$b + "-" + $v, $b + "-" + $v + "-" + $s] + [$a[] | $b + "-" + .]')
+            else
+              primary="${base_tag}"
+              tags=$(jq -cn --arg b "${base_tag}" --arg v "${VERSION_TAG}" --arg s "${sha7}" --argjson a "${ALIASES}" \
+                '[$b, $b + "-" + $s] + (if $v == "" then [] else [$b + "-" + $v, $b + "-" + $v + "-" + $s] end)
+                 + [$a[] | $b + "-" + .]')
             fi
             push="true"
           else
@@ -149,7 +145,9 @@ jobs:
           NAME: ${{ inputs.name }}
           TARGET: ${{ inputs.target }}
           MULTI_ARCH: ${{ inputs.multi_arch }}
-          MOD_VERSION: ${{ steps.version.outputs.mod_version }}
+          VERSION_TAG: ${{ steps.version.outputs.version_tag }}
+          ALIASES: ${{ steps.version.outputs.aliases || '[]' }}
+          LINE: ${{ steps.version.outputs.line }}
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           FORK: ${{ github.event.pull_request.head.repo.fork }}
