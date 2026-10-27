@@ -234,7 +234,8 @@ The caller subscribes to `pull_request` with `types: [opened, synchronize, reope
 (with `prerelease` and `exclude`), `github_commit`, `gitlab_commit`, `codeberg_release`, `gitea_release`,
 `json` (via the `jq` binary), `npm`, `pip`, `alpine_apk` (APKINDEX of every build platform must agree),
 `deb_packages`, `deb_repo` (`docker run` + `apt-cache`), `blob` (md5), `os` (md5 of `package_versions.txt`)
-and `command`; then `transform`, sanitising (`~ , % @ + ; : /` and spaces removed), semver derivation and
+`command` and `combined` (several sources, each with its own `transform`, joined with `separator`, `-` by
+default); then `transform`, sanitising (`~ , % @ + ; : /` and spaces removed), semver derivation and
 `require_assets`. It has no Actions coupling so the control plane's scheduler imports the same file:
 
 ```python
@@ -249,10 +250,16 @@ Exit codes of the CLI: 0 resolved, 1 error, 3 assets not ready (try later).
 
 `mod-build.yml` (inputs `name`, `target`, `multi_arch`, `mod_version`) builds a `docker-mods` branch named
 `<target>-<name>` and pushes `ghcr.io/linuxserver-playground/mods:<target>-<name>` and `:<target>-<name>-<sha7>`
-(plus `-<mod_version>` variants) on push to that branch, and
+(plus `-<version>` variants) on push to that branch, and
 `ghcr.io/linuxserver-playground/untrusted-pr/mods:<target>-<name>-pr-<n>` for pull requests. arm64 is built
 natively. `scripts/pr_cleanup.py` also understands the `*-pr-<n>` mod tags; the PR report's cleanup job is the
 only caller today.
+
+`MOD_VERSION` (a build arg, the `org.opencontainers.image.version` label and the `-<version>` tags, with the
+characters of CONVENTIONS §3 removed) is the `mod_version` input when given; the control plane's mod upstream
+check passes the version it resolved. Without one, a mod whose `mod.yml` has an `upstream` block resolves it
+with `scripts/resolve_version.py` in the plan job, so a push builds the same version the scheduler would have.
+A failed lookup is a warning and the build goes on without `MOD_VERSION` (the Dockerfile's own lookup).
 
 ## Known limits
 

@@ -23,7 +23,7 @@ on:
         type: boolean
         default: false
       mod_version:
-        description: Optional MOD_VERSION build arg, also published as an extra tag
+        description: Optional MOD_VERSION build arg, also published as an extra tag; empty resolves mod.yml's upstream block
         type: string
         default: ""
       workflows_ref:
@@ -47,7 +47,57 @@ jobs:
       tags: ${{ steps.plan.outputs.tags }}
       push: ${{ steps.plan.outputs.push }}
       mode: ${{ steps.plan.outputs.mode }}
+      mod_version: ${{ steps.version.outputs.mod_version }}
     steps:
+      - name: Check out mod.yml
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+          sparse-checkout: mod.yml
+          sparse-checkout-cone-mode: false
+
+      - name: Check out workflows
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.WORKFLOWS_REPOSITORY }}
+          ref: ${{ inputs.workflows_ref }}
+          path: ${{ env.WORKFLOWS_PATH }}
+          persist-credentials: false
+
+      - name: Resolve MOD_VERSION
+        id: version
+        run: |
+          set -euo pipefail
+          if [[ -n "${INPUT_VERSION}" ]]; then
+            echo "MOD_VERSION ${INPUT_VERSION} (input)"
+            echo "mod_version=${INPUT_VERSION}" >> "${GITHUB_OUTPUT}"
+            exit 0
+          fi
+          python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --quiet --user pyyaml
+          python3 - <<'PY'
+          import os, sys, yaml
+          sys.path.insert(0, os.path.join(os.environ["WORKFLOWS_PATH"], "scripts"))
+          import resolve_version as rv
+          mod = yaml.safe_load(open("mod.yml")) or {}
+          upstream = mod.get("upstream") or {}
+          if not upstream.get("version"):
+              print("no upstream block in mod.yml; the Dockerfile's own lookup applies")
+              sys.exit(0)
+          manifest = {"upstream": upstream, "build": {"platforms": mod.get("platforms") or ["amd64", "arm64"]}}
+          try:
+              result = rv.resolve(manifest)
+          except rv.ResolveError as exc:
+              print(f"::warning file=mod.yml::upstream version not resolved ({exc}); building without MOD_VERSION")
+              sys.exit(0)
+          print(f"MOD_VERSION {result['upstream']} from {result['source_url']}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as out:
+              out.write(f"mod_version={result['upstream']}\n")
+          PY
+        env:
+          INPUT_VERSION: ${{ inputs.mod_version }}
+          GITHUB_TOKEN: ${{ github.token }}
+
       - name: Plan
         id: plan
         run: |
@@ -67,8 +117,10 @@ jobs:
             image_path="ghcr.io/${org}/mods"
             primary="${base_tag}"
             tags="[\"${base_tag}\",\"${base_tag}-${sha7}\"]"
-            if [[ -n "${MOD_VERSION}" ]]; then
-              tags="[\"${base_tag}\",\"${base_tag}-${sha7}\",\"${base_tag}-${MOD_VERSION}\",\"${base_tag}-${MOD_VERSION}-${sha7}\"]"
+            # The version as a tag: CONVENTIONS §3's characters removed, as the scheduler does before it looks.
+            version_tag="${MOD_VERSION//[~,%@+;:\/ ]/}"
+            if [[ -n "${version_tag}" ]]; then
+              tags="[\"${base_tag}\",\"${base_tag}-${sha7}\",\"${base_tag}-${version_tag}\",\"${base_tag}-${version_tag}-${sha7}\"]"
             fi
             push="true"
           else
@@ -97,7 +149,7 @@ jobs:
           NAME: ${{ inputs.name }}
           TARGET: ${{ inputs.target }}
           MULTI_ARCH: ${{ inputs.multi_arch }}
-          MOD_VERSION: ${{ inputs.mod_version }}
+          MOD_VERSION: ${{ steps.version.outputs.mod_version }}
           SHA: ${{ github.event.pull_request.head.sha || github.sha }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           FORK: ${{ github.event.pull_request.head.repo.fork }}
@@ -142,7 +194,9 @@ jobs:
             --label "org.opencontainers.image.licenses=GPL-3.0-only"
             --label "org.opencontainers.image.title=${TARGET}-${NAME}"
             --label "io.linuxserver.image.mode=${MODE}")
-          [[ -n "${MOD_VERSION}" ]] && args+=(--build-arg "MOD_VERSION=${MOD_VERSION}")
+          if [[ -n "${MOD_VERSION}" ]]; then
+            args+=(--build-arg "MOD_VERSION=${MOD_VERSION}" --label "org.opencontainers.image.version=${MOD_VERSION}")
+          fi
           tag="${IMAGE_PATH}:${PREFIX}-${PRIMARY_TAG}"
           if [[ "${PUSH}" == "true" ]]; then
             docker buildx build "${args[@]}" --push -t "${tag}" .
@@ -160,7 +214,7 @@ jobs:
           MODE: ${{ needs.plan.outputs.mode }}
           NAME: ${{ inputs.name }}
           TARGET: ${{ inputs.target }}
-          MOD_VERSION: ${{ inputs.mod_version }}
+          MOD_VERSION: ${{ needs.plan.outputs.mod_version }}
 
   publish:
     name: Publish
