@@ -1,0 +1,154 @@
+name: pages
+description: Assemble the repository's GitHub Pages site from its Releases (CONVENTIONS §6, "Repo Pages") with scripts/pages.py and deploy it. Stateless, so a lost deploy is repaired by the next one. A deploy refused because another is in progress (two branches of one repository releasing together) is tried twice more, each time from a fresh assembly, so the deploy that lands last holds both releases. The job needs pages and id-token write and the github-pages environment.
+
+inputs:
+  repository:
+    default: ${{ github.repository }}
+  github_token:
+    default: ${{ github.token }}
+  keep:
+    description: Releases kept per live branch
+    default: "5"
+
+outputs:
+  page_url:
+    description: The deployed site, empty when no deploy succeeded
+    value: ${{ steps.result.outputs.page_url }}
+
+runs:
+  using: composite
+  steps:
+    - name: Assemble the Pages site
+      id: assemble
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --quiet --user pyyaml
+        python3 "${GITHUB_ACTION_PATH}/../../../scripts/pages.py" assemble \
+          --repo "${REPOSITORY}" --keep "${KEEP}" --out "${RUNNER_TEMP}/lsio-pages"
+      env:
+        REPOSITORY: ${{ inputs.repository }}
+        KEEP: ${{ inputs.keep }}
+        GH_TOKEN: ${{ inputs.github_token }}
+      continue-on-error: true
+
+    - name: Upload the Pages artifact
+      id: upload
+      if: steps.assemble.outcome == 'success'
+      uses: actions/upload-pages-artifact@v5
+      with:
+        path: ${{ runner.temp }}/lsio-pages
+        retention-days: 1
+      continue-on-error: true
+
+    - name: Deploy to Pages
+      id: deploy
+      if: steps.upload.outcome == 'success'
+      uses: actions/deploy-pages@v5
+      continue-on-error: true
+
+    # ---- retries: wait, assemble again (a release made meanwhile is included), deploy ----
+    - name: Wait before the second deploy
+      id: wait2
+      if: steps.upload.outcome == 'success' && steps.deploy.outcome == 'failure'
+      shell: bash
+      run: bash "${GITHUB_ACTION_PATH}/wait.sh" 60
+      env:
+        REPOSITORY: ${{ inputs.repository }}
+        GH_TOKEN: ${{ inputs.github_token }}
+      continue-on-error: true
+
+    - name: Assemble the Pages site again
+      id: assemble2
+      if: steps.wait2.outcome == 'success'
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 "${GITHUB_ACTION_PATH}/../../../scripts/pages.py" assemble \
+          --repo "${REPOSITORY}" --keep "${KEEP}" --out "${RUNNER_TEMP}/lsio-pages"
+      env:
+        REPOSITORY: ${{ inputs.repository }}
+        KEEP: ${{ inputs.keep }}
+        GH_TOKEN: ${{ inputs.github_token }}
+        LSIO_SUMMARY: /dev/stdout
+      continue-on-error: true
+
+    - name: Upload the Pages artifact again
+      id: upload2
+      if: steps.assemble2.outcome == 'success'
+      uses: actions/upload-pages-artifact@v5
+      with:
+        name: github-pages-2
+        path: ${{ runner.temp }}/lsio-pages
+        retention-days: 1
+      continue-on-error: true
+
+    - name: Deploy to Pages again
+      id: deploy2
+      if: steps.upload2.outcome == 'success'
+      uses: actions/deploy-pages@v5
+      with:
+        artifact_name: github-pages-2
+      continue-on-error: true
+
+    - name: Wait before the last deploy
+      id: wait3
+      if: steps.upload2.outcome == 'success' && steps.deploy2.outcome == 'failure'
+      shell: bash
+      run: bash "${GITHUB_ACTION_PATH}/wait.sh" 120
+      env:
+        REPOSITORY: ${{ inputs.repository }}
+        GH_TOKEN: ${{ inputs.github_token }}
+      continue-on-error: true
+
+    - name: Assemble the Pages site a last time
+      id: assemble3
+      if: steps.wait3.outcome == 'success'
+      shell: bash
+      run: |
+        set -euo pipefail
+        python3 "${GITHUB_ACTION_PATH}/../../../scripts/pages.py" assemble \
+          --repo "${REPOSITORY}" --keep "${KEEP}" --out "${RUNNER_TEMP}/lsio-pages"
+      env:
+        REPOSITORY: ${{ inputs.repository }}
+        KEEP: ${{ inputs.keep }}
+        GH_TOKEN: ${{ inputs.github_token }}
+        LSIO_SUMMARY: /dev/stdout
+      continue-on-error: true
+
+    - name: Upload the Pages artifact a last time
+      id: upload3
+      if: steps.assemble3.outcome == 'success'
+      uses: actions/upload-pages-artifact@v5
+      with:
+        name: github-pages-3
+        path: ${{ runner.temp }}/lsio-pages
+        retention-days: 1
+      continue-on-error: true
+
+    - name: Deploy to Pages a last time
+      id: deploy3
+      if: steps.upload3.outcome == 'success'
+      uses: actions/deploy-pages@v5
+      with:
+        artifact_name: github-pages-3
+      continue-on-error: true
+
+    - name: Pages result
+      id: result
+      shell: bash
+      run: |
+        set -euo pipefail
+        # shellcheck source=../../../scripts/lib.sh
+        source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
+        url="${URL1:-${URL2:-${URL3:-}}}"
+        set_output page_url "${url}"
+        if [[ -z "${url}" ]]; then
+          warn "Pages was not deployed; the site keeps its previous deploy until the next release or a reason=pages run"
+          exit 1
+        fi
+        echo "Pages deployed: ${url}"
+      env:
+        URL1: ${{ steps.deploy.outputs.page_url }}
+        URL2: ${{ steps.deploy2.outputs.page_url }}
+        URL3: ${{ steps.deploy3.outputs.page_url }}

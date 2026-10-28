@@ -14,13 +14,13 @@ on:
       reason:
         description: Why this build runs
         type: choice
-        options: [manual, upstream, packages, rebuild]
+        options: [manual, upstream, packages, rebuild, pages]
         default: manual
   repository_dispatch:
     types: [build]
 
 concurrency:
-  group: build-${{ github.ref }}
+  group: build-${{ github.ref }}${{ (github.event.inputs.reason || github.event.client_payload.reason) == 'pages' && '-pages' || '' }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -33,6 +33,7 @@ jobs:
       pull-requests: write
       id-token: write
       attestations: write
+      pages: write
     with:
       reason: ${{ github.event.inputs.reason || github.event.client_payload.reason || 'push' }}
       workflows_ref: v1

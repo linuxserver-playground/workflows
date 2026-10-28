@@ -21,7 +21,7 @@ are the control plane's job.
 | `.github/workflows/cleanup-staging.yml` | Weekly deletion of `build/*` staging images older than 7 days (runs in this repo). |
 | `.github/workflows/ci.yml` | Checks of this repository. |
 | `.github/actions/<name>/` | Composite actions; the logic lives in the script beside each `action.yml`. |
-| `scripts/` | Shared code: `lib.sh` (bash helpers, `retry_ghcr`), `resolve_version.py`, `mod_version.py`, `next_tag.py`, `tags.py`, `package_versions.py`, `upstream_notes.py`, `attach_sbom.py`, `pr_report.py`, `publish_pr_image.sh`, `pr_cleanup.py`, `cleanup_staging.py`, the prepare-job scripts, `check.sh`. |
+| `scripts/` | Shared code: `lib.sh` (bash helpers, `retry_ghcr`), `resolve_version.py`, `mod_version.py`, `next_tag.py`, `tags.py`, `package_versions.py`, `upstream_notes.py`, `attach_sbom.py`, `pr_report.py`, `pages.py`, `publish_pr_image.sh`, `pr_cleanup.py`, `cleanup_staging.py`, the prepare-job scripts, `check.sh`. |
 | `templates/build.yml`, `templates/pr-report.yml` | The caller files the builder renders into image repos. |
 | `fixtures/example-image/` | A minimal valid image repository for integration runs. |
 | `tests/` | pytest over every Python script plus static checks of the YAML. |
@@ -32,8 +32,9 @@ are the control plane's job.
 flowchart LR
   P[prepare<br/>manifest · resolve-version · next-tag<br/>render or check · shellcheck · s6 bits<br/>tag set · staging refs] --> A1[arch amd64<br/>free-disk · build-arch → build/ staging · test-arch]
   P --> A2[arch arm64<br/>free-disk · build-arch → build/ staging · test-arch]
-  A1 --> U[publish<br/>publish-manifest from staging · emit-bundle · record<br/>release or package-check · notify-control]
+  A1 --> U[publish<br/>publish-manifest from staging · emit-bundle · record<br/>release or package-check · notify-control · pages]
   A2 --> U
+  G[pages<br/>reason=pages only: deploy the Pages site]
   U -. workflow_run .-> R[pr-report.yml, trusted<br/>report comment · fork image after approval<br/>delete untrusted-pr/… pr-N-* on close]
 ```
 
@@ -67,7 +68,7 @@ layers; about a minute, never fatal; CONVENTIONS §6), attests the index (live),
 GitHub Release on the branch (`target_commitish` is the branch name, CONVENTIONS §3) with the three-section
 notes and every bundle asset (`release`, live only), posts or updates the single PR comment (pr), POSTs the
 signed `build.summary` event to the control plane (`notify-control`, always; silent when `CONTROL_URL` is
-empty), writes the job summary, and finally fails if any job failed. The job summary is the run page's only
+empty), deploys the repository's Pages site after a live release (`pages`, below; never fatal), writes the job summary, and finally fails if any job failed. The job summary is the run page's only
 summary box (control's notifications link it as `#summary-<job id>`): the result, then, on a branch or live
 build, the report a pull request gets as its comment (`scripts/pr_report.py summary`: the pull command,
 screenshots and tests first, then runtime, package changes against the release before it or the live
@@ -105,7 +106,7 @@ branch's workflow, and no job in it checks out, builds or runs pull request code
 ### Reasons
 
 `inputs.reason` says why a run exists. It is recorded in `build.json` and the control event; only
-`packages` changes what the run does.
+`packages` and `pages` change what the run does.
 
 | Reason | Set by | Live branch | Other branches / PRs |
 | --- | --- | --- | --- |
@@ -114,6 +115,7 @@ branch's workflow, and no job in it checks out, builds or runs pull request code
 | `packages` | control plane's weekly package check or `workflow_dispatch` | build and test, then **compare, never release** (below) | plain dev build; nothing is compared |
 | `rebuild` | control plane or `workflow_dispatch` (base image change, bad release) | normal build and release; same `-lsN` when HEAD is already released | dev build |
 | `manual` | `workflow_dispatch` default | normal build and release | dev build |
+| `pages` | `workflow_dispatch` or `repository_dispatch` (filling or repairing a site) | **deploy the Pages site only** (below) | the same: the site is the repository's, whatever the ref |
 | `pull_request` | derived: every pr-mode build reports this whatever the input | n/a | pr build |
 
 **`packages` on a live branch** (Jenkins parity with the `Update-packages` stage): prepare, build and test run
@@ -135,6 +137,30 @@ by md5 with trailing whitespace normalised, and compares arm64 against the previ
 On a normal live release the committed `package_versions.txt` may lag the image: the release build does not
 commit it, only the next package check does. The authoritative table of a release is its
 `package_versions.<arch>.txt` asset.
+
+### Pages
+
+Every image repository's GitHub Pages site holds the heavy files of its newest live builds (CONVENTIONS §6,
+"Repo Pages"): `index.json`, and per build `files.<arch>.json.gz`, `packages.<arch>.json.gz` and the unpacked
+`test.<arch>.tar.gz`, for the newest 5 releases of each live branch. Nothing is committed: the `pages` action
+assembles the site from the repository's Releases into an empty directory (`scripts/pages.py`: one GraphQL
+query for the branches and their `image.yml`, the release list, then the assets from their download URLs,
+which cost no REST quota), uploads it with `actions/upload-pages-artifact` and deploys it with
+`actions/deploy-pages`. A deploy refused because another is in progress (two branches of one repository
+released together) is retried after 60 and 120 seconds, each time from a fresh assembly, so the deploy that
+lands last holds both releases; a repository without Pages is not retried.
+
+- **After a live release**, as the Publish job's step `Pages (live)`, after the event to the control plane (the
+  hub ingests meanwhile) and with `continue-on-error`: it never fails the release, and a lost deploy is
+  repaired by the next. deploy-pages wants a job in the `github-pages` environment, so the Publish job enters
+  it, but only on a run that can release (live, pushing, not a package check): every other run gets an empty
+  environment name, which is none, and leaves no deployment behind. A step, not a job: every job waits for one of
+  the 20 runner slots on its own, and the release path takes no extra wait.
+- **`reason: pages`** runs only the job `pages` (prepare, arch and publish are skipped): no build, release,
+  commit, `build.summary` event or job summary. It fails when nothing was deployed. The caller puts it in its
+  own concurrency group (`build-<ref>-pages`), so it never displaces a pending build of the branch.
+
+Both need `pages: write` and `id-token: write` from the caller, which the builder's `build.yml` grants.
 
 ### Bot commits
 
@@ -208,18 +234,18 @@ through the `ci_image` input until the ci image is published.
 jobs:
   build:
     uses: linuxserver-playground/workflows/.github/workflows/image-build.yml@v1
-    permissions: { contents: write, packages: write, pull-requests: write, id-token: write, attestations: write }
+    permissions: { contents: write, packages: write, actions: write, pull-requests: write, id-token: write, attestations: write, pages: write }
     with:
       reason: ${{ github.event.inputs.reason || github.event.client_payload.reason || 'push' }}
       workflows_ref: v1
     secrets: inherit
 ```
 
-Inputs: `reason` (`push`, `upstream`, `packages`, `rebuild`, `manual`; see "Reasons"), `workflows_ref` (must
+Inputs: `reason` (`push`, `upstream`, `packages`, `rebuild`, `manual`, `pages`; see "Reasons"), `workflows_ref` (must
 match the ref in `uses:`; the composite actions are checked out from it), `ci_image`, `builder_image` (empty
 skips templating), `builder_ref`. Secrets (organisation level, absent in forks, all optional): `CONTROL_URL`,
 `CONTROL_EVENTS_SECRET`, `ATTACHMENTS_TOKEN` (screenshots in the job summary's report). `GITHUB_TOKEN` is
-enough for GHCR, Releases and the two bot commits. `pr-report.yml`
+enough for GHCR, Releases, the two bot commits and the Pages deploy. `pr-report.yml`
 takes `ATTACHMENTS_TOKEN` (screenshot uploads) and `PACKAGES_TOKEN` (only for deleting the images of closed
 pull requests when `GITHUB_TOKEN` may not).
 
@@ -300,6 +326,9 @@ All pinned by major tag, every one on the Node 24 runtime:
 - `actions/setup-python@v7`
 - `actions/attest-build-provenance@v4` (with `create-storage-record: false`: a storage record needs
   `artifact-metadata: write` from every caller)
+- `actions/upload-pages-artifact@v5` (its default `github-pages` name and `-2`, `-3` for the retries: names are
+  unique within a run)
+- `actions/deploy-pages@v5`
 - `docker/setup-buildx-action@v4`
 - `docker/login-action@v4`
 

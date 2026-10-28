@@ -16,8 +16,9 @@ ACTIONS = sorted((ROOT / ".github" / "actions").glob("*/action.yml"))
 TEMPLATES = sorted((ROOT / "templates").glob("*.yml"))
 ALL_YAML = WORKFLOWS + ACTIONS + TEMPLATES
 
-EXPECTED_ACTIONS = {"free-disk", "manifest", "resolve-version", "next-tag", "build-arch", "test-arch", "publish-manifest", "emit-bundle", "record", "release", "notify-control", "package-check"}
+EXPECTED_ACTIONS = {"free-disk", "manifest", "resolve-version", "next-tag", "build-arch", "test-arch", "publish-manifest", "emit-bundle", "record", "release", "notify-control", "package-check", "pages"}
 CLOSED_PR = "github.event_name == 'pull_request' && github.event.action == 'closed'"
+NOT_PAGES = "inputs.reason != 'pages'"
 ALLOWED_REGISTRIES = re.compile(r"ghcr\.io/(linuxserver-playground/|linuxserver/baseimage-)")
 FORBIDDEN = re.compile(r"docker\.io|hub\.docker\.com|registry\.gitlab\.com|quay\.io|s3://|scarf|discord", re.IGNORECASE)
 
@@ -49,13 +50,13 @@ def test_image_build_contract():
     assert inputs["ci_image"]["default"] == "ghcr.io/linuxserver-playground/ci:latest"
     assert set(wf[True]["workflow_call"]["secrets"]) == {"CONTROL_URL", "CONTROL_EVENTS_SECRET", "ATTACHMENTS_TOKEN"}
     assert all(not v.get("required") for v in wf[True]["workflow_call"]["secrets"].values())
-    assert list(wf["jobs"]) == ["prepare", "arch", "publish"]
+    assert list(wf["jobs"]) == ["prepare", "arch", "publish", "pages"]
     arch = wf["jobs"]["arch"]
     assert arch["strategy"]["fail-fast"] is False
     assert arch["runs-on"] == "${{ matrix.runner }}"
     publish = wf["jobs"]["publish"]
-    assert publish["if"] == "${{ always() && !(" + CLOSED_PR + ") }}"
-    assert publish["permissions"] == {"contents": "write", "actions": "write", "packages": "write", "pull-requests": "write", "id-token": "write", "attestations": "write"}
+    assert publish["if"] == "${{ always() && " + NOT_PAGES + " && !(" + CLOSED_PR + ") }}"
+    assert publish["permissions"] == {"contents": "write", "actions": "write", "packages": "write", "pull-requests": "write", "id-token": "write", "attestations": "write", "pages": "write"}
     used = {s.get("uses", "") for job in wf["jobs"].values() for s in job["steps"]}
     for a in EXPECTED_ACTIONS:
         assert any(u.endswith(f"/.github/actions/{a}") for u in used), a
@@ -97,7 +98,7 @@ def test_package_check_is_a_check_not_a_release():
 def test_pull_requests_are_reported_by_the_trusted_half():
     build = load(ROOT / ".github" / "workflows" / "image-build.yml")
     for job in ("prepare", "arch"):
-        assert build["jobs"][job]["if"] == "${{ !(" + CLOSED_PR + ") }}"
+        assert build["jobs"][job]["if"] == "${{ " + NOT_PAGES + " && !(" + CLOSED_PR + ") }}"
     # The build of a pull request never posts to it and never deletes images: that is pr-report.yml.
     assert "cleanup" not in build["jobs"]
     assert "Comment on pull request" not in _steps(build, "publish")
@@ -230,3 +231,37 @@ def test_only_the_publish_job_writes_the_run_summary():
     for script in (ROOT / ".github" / "actions").glob("*/*.sh"):
         text = script.read_text(encoding="utf-8")
         assert '>> "${GITHUB_STEP_SUMMARY' not in text, script
+
+
+def test_pages_deploys_after_a_live_release_and_alone_for_reason_pages():
+    """CONVENTIONS §6, "Repo Pages": every live release redeploys the site; reason=pages runs only the deploy."""
+    wf = load(ROOT / ".github" / "workflows" / "image-build.yml")
+    publish = wf["jobs"]["publish"]
+    # Only a run that can release enters the environment; the others get an empty name, which is none.
+    env = publish["environment"]["name"]
+    assert "needs.prepare.outputs.mode == 'live'" in env and "package_check != 'true'" in env and env.endswith("&& 'github-pages' || '' }}")
+    steps = _steps(wf, "publish")
+    names = [s.get("name") for s in publish["steps"]]
+    assert names.index("Release (live)") < names.index("Notify control plane") < names.index("Pages (live)") < names.index("Job summary")
+    assert steps["pages"]["if"] == "${{ !cancelled() && steps.release.outcome == 'success' }}"
+    assert steps["pages"]["continue-on-error"] is True
+    assert steps["pages"]["uses"] == "./.lsio-workflows/.github/actions/pages"
+    # reason=pages: one job, nothing else runs (no build, release, package commit or event to control).
+    pages = wf["jobs"]["pages"]
+    assert pages["if"] == "${{ inputs.reason == 'pages' }}" and "needs" not in pages
+    assert pages["permissions"] == {"contents": "read", "pages": "write", "id-token": "write"}
+    assert pages["environment"] == {"name": "github-pages"}
+    assert [s.get("uses") for s in pages["steps"]] == ["actions/checkout@v5", "./.lsio-workflows/.github/actions/pages"]
+    for job in ("prepare", "arch", "publish"):
+        assert NOT_PAGES in wf["jobs"][job]["if"], job
+    action = load(ROOT / ".github" / "actions" / "pages" / "action.yml")
+    deploys = [s for s in action["runs"]["steps"] if str(s.get("uses", "")).startswith("actions/deploy-pages@")]
+    uploads = [s for s in action["runs"]["steps"] if str(s.get("uses", "")).startswith("actions/upload-pages-artifact@")]
+    assert len(deploys) == len(uploads) == 3
+    # Artifact names are unique within a run; each deploy takes the upload before it.
+    assert [u.get("with", {}).get("name", "github-pages") for u in uploads] == ["github-pages", "github-pages-2", "github-pages-3"]
+    assert [d.get("with", {}).get("artifact_name", "github-pages") for d in deploys] == ["github-pages", "github-pages-2", "github-pages-3"]
+    assert all(s.get("continue-on-error") for s in action["runs"]["steps"] if s.get("id") != "result")
+    tpl = load(ROOT / "templates" / "build.yml")
+    assert tpl["jobs"]["build"]["permissions"]["pages"] == "write"
+    assert "pages" in tpl[True]["workflow_dispatch"]["inputs"]["reason"]["options"]

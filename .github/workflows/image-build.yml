@@ -10,12 +10,14 @@ name: Image build
 # the committed package_versions.txt and commits the new one when it changed; that push starts the
 # release build. The pull request report, publishing a fork's image and deleting a closed pull request's
 # images are the trusted half, pr-report.yml: nothing here posts to pull requests.
+# Every live release also deploys the repository's Pages site, the newest builds' heavy files assembled from the
+# Releases (CONVENTIONS §6, "Repo Pages"); reason=pages does only that, in the one job `pages`, and nothing else.
 
 on:
   workflow_call:
     inputs:
       reason:
-        description: Why this build runs (push, upstream, packages, rebuild, manual)
+        description: Why this build runs (push, upstream, packages, rebuild, manual; pages deploys the Pages site and builds nothing)
         type: string
         default: push
       workflows_ref:
@@ -52,7 +54,7 @@ env:
 jobs:
   prepare:
     name: Prepare
-    if: ${{ !(github.event_name == 'pull_request' && github.event.action == 'closed') }}
+    if: ${{ inputs.reason != 'pages' && !(github.event_name == 'pull_request' && github.event.action == 'closed') }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -251,7 +253,7 @@ jobs:
   arch:
     name: Build ${{ matrix.arch }}
     needs: prepare
-    if: ${{ !(github.event_name == 'pull_request' && github.event.action == 'closed') }}
+    if: ${{ inputs.reason != 'pages' && !(github.event_name == 'pull_request' && github.event.action == 'closed') }}
     runs-on: ${{ matrix.runner }}
     permissions:
       contents: read
@@ -368,7 +370,7 @@ jobs:
   publish:
     name: Publish
     needs: [prepare, arch]
-    if: ${{ always() && !(github.event_name == 'pull_request' && github.event.action == 'closed') }}
+    if: ${{ always() && inputs.reason != 'pages' && !(github.event_name == 'pull_request' && github.event.action == 'closed') }}
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -377,6 +379,11 @@ jobs:
       pull-requests: write
       id-token: write
       attestations: write
+      pages: write  # the Pages deploy of a live release
+    # deploy-pages deploys from a job in the github-pages environment. Only a run that can release enters it, so
+    # pull request, dev and package check runs leave no deployments there; an empty name is no environment.
+    environment:
+      name: ${{ needs.prepare.outputs.mode == 'live' && needs.prepare.outputs.push_images == 'true' && needs.prepare.outputs.package_check != 'true' && 'github-pages' || '' }}
     env:
       MODE: ${{ needs.prepare.outputs.mode }}
       PUSH: ${{ needs.prepare.outputs.push_images }}
@@ -596,6 +603,15 @@ jobs:
           release_url: ${{ steps.release.outputs.release_url }}
           artifact_url: ${{ steps.artifact.outputs.artifact-url }}
 
+      - name: Pages (live)
+        # The repository's Pages site, assembled from its Releases, so it includes the release just made
+        # (CONVENTIONS §6, "Repo Pages"). After the event to the control plane: the hub ingests meanwhile. It never
+        # fails the release; a lost deploy is repaired by the next one.
+        id: pages
+        if: ${{ !cancelled() && steps.release.outcome == 'success' }}
+        continue-on-error: true
+        uses: ./.lsio-workflows/.github/actions/pages
+
       - name: Job summary
         # The run's one summary box, which notifications link (#summary-<job id>): the result, then the report a
         # pull request gets as its comment (a pr build has the comment instead; screenshots need
@@ -624,6 +640,7 @@ jobs:
               echo
             fi
             if [[ -n "${RELEASE_URL}" ]]; then echo "Release: ${RELEASE_URL}"; echo; fi
+            if [[ -n "${PAGES_URL}" ]]; then echo "Pages: ${PAGES_URL}"; echo; fi
             if [[ -n "${ARTIFACT_URL}" ]]; then echo "Bundle artifact: ${ARTIFACT_URL}"; echo; fi
             if [[ -n "${STAGING}" && "${STAGING}" != "{}" ]]; then
               echo "Staging references (not for use, removed after 7 days): \`${STAGING}\`"
@@ -645,6 +662,7 @@ jobs:
           FAILED_JOB: ${{ steps.outcome.outputs.failed_job }}
           PREPARE: ${{ needs.prepare.result }}
           RELEASE_URL: ${{ steps.release.outputs.release_url }}
+          PAGES_URL: ${{ steps.pages.outputs.page_url }}
           ARTIFACT_URL: ${{ steps.artifact.outputs.artifact-url }}
           STAGING: ${{ needs.prepare.outputs.staging_refs }}
           CHANGED: ${{ steps.packages.outputs.changed }}
@@ -670,3 +688,27 @@ jobs:
         env:
           RESULT: ${{ steps.outcome.outputs.result }}
           FAILED_JOB: ${{ steps.outcome.outputs.failed_job }}
+
+  pages:
+    name: Pages
+    # reason=pages: deploy the repository's Pages site from its Releases and nothing else, to fill or repair it. No
+    # build, release, commit or event to the control plane; the other jobs are skipped.
+    if: ${{ inputs.reason == 'pages' }}
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+    steps:
+      - name: Check out shared workflows
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.WORKFLOWS_REPOSITORY }}
+          ref: ${{ inputs.workflows_ref }}
+          path: ${{ env.WORKFLOWS_PATH }}
+          persist-credentials: false
+
+      - name: Deploy Pages
+        uses: ./.lsio-workflows/.github/actions/pages
