@@ -3,8 +3,9 @@
 pages: assemble an image repository's GitHub Pages site from its GitHub Releases (CONVENTIONS §6, "Repo Pages").
 
 The site is the browser-readable home of each build's heavy files: the newest KEEP releases of every live branch,
-each with its file trees and package documents as the Release has them and its test tarballs unpacked as the hub
-unpacks them. Nothing is committed anywhere: every run starts from an empty directory and reads the Releases, so
+each with its file trees and package documents as the Release has them, its test tarballs unpacked as the hub
+unpacks them, and its vulns.json: the scan record.json holds, shaped by builder.derive.vulns.document (the builder
+package, installed by the action), the state of the image as it was released. Nothing is committed anywhere: every run starts from an empty directory and reads the Releases, so
 the last deploy is complete whatever an earlier one missed.
 
     python3 pages.py assemble --out <dir> [--repo owner/repo] [--keep 5]
@@ -256,11 +257,42 @@ def _write(root: Path, relative: str, content: bytes) -> int:
     return len(content)
 
 
-def build_files(release: Json, fetch: Fetch) -> tuple[list[str], dict[str, bytes]]:
+def vulns_json(record_bytes: bytes | None, image: str, tag: str) -> bytes | None:
+    """
+    vulns.json from a release's record.json: its own scan (`vulns`, per architecture), shaped as the contract says
+    (CONVENTIONS §6). None when there is no record, it does not parse, or it holds no scan.
+    """
+    from builder.derive.vulns import document  # noqa: PLC0415 - installed by the action, not needed to select
+
+    try:
+        record = json.loads(record_bytes) if record_bytes else None
+    except ValueError:
+        return None
+    scans = record.get("vulns") if isinstance(record, dict) else None
+    if not isinstance(scans, dict) or not scans:
+        return None
+    doc = document(str(record.get("image") or image), str(record.get("tag") or tag), scans)
+    return (json.dumps(doc, separators=(",", ":"), ensure_ascii=False) + "\n").encode("utf-8")
+
+
+def _image_name(repo: str) -> str:
+    return repo.rsplit("/", 1)[-1].removeprefix("docker-")
+
+
+def build_files(release: Json, fetch: Fetch, image: str = "") -> tuple[list[str], dict[str, bytes]]:
     """The arches a release has and its files under builds/<tag>/."""
     assets = {a.get("name"): a.get("browser_download_url") for a in release.get("assets") or [] if a.get("name")}
     files: dict[str, bytes] = {}
     arches: list[str] = []
+    if assets.get("record.json"):
+        tag = str(release.get("tag_name") or "")
+        try:
+            vulns = vulns_json(fetch(assets["record.json"]), image, tag)
+        except (KeyError, TypeError, ValueError) as err:
+            gha.warning(f"{tag}: record.json has no usable scan: {err}")
+            vulns = None
+        if vulns is not None:
+            files["vulns.json"] = vulns
     for arch in ARCHES:
         names = (f"files.{arch}.json.gz", f"packages.{arch}.json.gz", f"test.{arch}.tar.gz")
         if not any(assets.get(n) for n in names):
@@ -321,7 +353,7 @@ def assemble(
     builds: list[Json] = []
     sizes: dict[str, int] = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-        results = list(pool.map(lambda br: build_files(br[1], fetch), selected))
+        results = list(pool.map(lambda br: build_files(br[1], fetch, _image_name(repo)), selected))
     for (branch, release), (arches, files) in zip(selected, results, strict=True):
         tag = str(release["tag_name"])
         sizes[tag] = sum(_write(out / "builds" / tag, name, content) for name, content in files.items())

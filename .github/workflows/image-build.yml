@@ -491,7 +491,6 @@ jobs:
           ci_image: ${{ inputs.ci_image }}
           index_digest: ${{ steps.manifest.outputs.index_digest }}
           control_url: ${{ secrets.CONTROL_URL }}
-          hub_url: ${{ vars.HUB_URL }}
           site_url: ${{ vars.SITE_URL }}
           builder_ref: ${{ inputs.builder_ref }}
 
@@ -521,7 +520,6 @@ jobs:
           manifest: ${{ runner.temp }}/image.json
           upstream: ${{ needs.prepare.outputs.upstream }}
           control_url: ${{ secrets.CONTROL_URL }}
-          hub_url: ${{ vars.HUB_URL }}
           site_url: ${{ vars.SITE_URL }}
           image_name: ${{ needs.prepare.outputs.name }}
 
@@ -611,6 +609,8 @@ jobs:
         if: ${{ !cancelled() && steps.release.outcome == 'success' }}
         continue-on-error: true
         uses: ./.lsio-workflows/.github/actions/pages
+        with:
+          builder_ref: ${{ inputs.builder_ref }}
 
       - name: Job summary
         # The run's one summary box, which notifications link (#summary-<job id>): the result, then the report a
@@ -712,3 +712,5 @@ jobs:
 
       - name: Deploy Pages
         uses: ./.lsio-workflows/.github/actions/pages
+        with:
+          builder_ref: ${{ inputs.builder_ref }}

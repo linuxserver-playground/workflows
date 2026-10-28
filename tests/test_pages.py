@@ -139,6 +139,40 @@ def test_assemble_writes_the_contract_layout(tmp_path: Path):
     assert sorted(p.name for p in out.iterdir()) == ["builds", "index.json"]
 
 
+SCAN_ROW = {"package": "curl", "version": "8.9.1-r0", "type": "apk", "id": "CVE-2026-1", "severity": "high",
+            "fix_state": "fixed", "fixed_in": ["8.9.2-r0"], "urls": [], "cvss": 7.5}
+
+
+def record(tag: str, vulns: dict) -> bytes:
+    return json.dumps({"schema": 1, "image": "example", "tag": tag, "vulns": vulns, "errors": []}).encode()
+
+
+def test_vulns_json_is_the_records_own_scan_shaped_by_builder(tmp_path: Path):
+    scan = {"db_date": "2026-10-26T05:00:00Z", "grype_version": "0.121.0", "scanned_at": "2026-10-26T12:00:00Z",
+            "matches": [SCAN_ROW]}
+    blobs = {
+        f"{BASE}/1.0-ls2/record.json": record("1.0-ls2", {"amd64": scan, "arm64": scan}),
+        f"{BASE}/1.0-ls1/record.json": record("1.0-ls1", {}),  # the build could not scan
+        f"{BASE}/0.9-ls1/record.json": b"not json",
+    }
+    selected = [
+        ("master", release("1.0-ls2", "master", "2026-10-03T00:00:00Z", ("record.json", "build.json"))),
+        ("master", release("1.0-ls1", "master", "2026-10-02T00:00:00Z", ("record.json",))),
+        ("master", release("0.9-ls1", "master", "2026-10-01T00:00:00Z", ("record.json",))),
+        ("master", release("0.8-ls1", "master", "2026-09-01T00:00:00Z", ("build.json",))),  # made before records
+    ]
+    pages.assemble(tmp_path / "site", REPO, selected, blobs.get, workers=2)
+    builds = tmp_path / "site" / "builds"
+    doc = json.loads((builds / "1.0-ls2" / "vulns.json").read_text())
+    assert doc["image"] == "example" and doc["tag"] == "1.0-ls2"
+    assert doc["summary"]["high"] == 1 and doc["by_arch"]["arm64"]["fixed"] == 1
+    assert doc["matches"] == [{**SCAN_ROW, "arches": ["amd64", "arm64"]}]
+    assert doc["db_date"] == "2026-10-26T05:00:00Z" and doc["scanned_at"] == "2026-10-26T12:00:00Z"
+    assert doc["caveats"] and "\n" not in (builds / "1.0-ls2" / "vulns.json").read_text().rstrip("\n")
+    for tag in ("1.0-ls1", "0.9-ls1", "0.8-ls1"):
+        assert not (builds / tag / "vulns.json").exists()
+
+
 def test_assemble_trims_old_builds_over_the_size_limit(tmp_path: Path):
     def rel(tag: str, branch: str, day: int) -> tuple[str, dict]:
         return branch, release(tag, branch, f"2026-10-{day:02d}T00:00:00Z", ("packages.amd64.json.gz",))

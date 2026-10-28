@@ -1,5 +1,5 @@
 name: pages
-description: Assemble the repository's GitHub Pages site from its Releases (CONVENTIONS §6, "Repo Pages") with scripts/pages.py and deploy it. Stateless, so a lost deploy is repaired by the next one. A deploy refused because another is in progress (two branches of one repository releasing together) is tried twice more, each time from a fresh assembly, so the deploy that lands last holds both releases. The job needs pages and id-token write and the github-pages environment.
+description: Assemble the repository's GitHub Pages site from its Releases (CONVENTIONS §6, "Repo Pages") with scripts/pages.py, each build's vulns.json shaped by the builder package, and deploy it. Stateless, so a lost deploy is repaired by the next one. A deploy refused because another is in progress (two branches of one repository releasing together) is tried twice more, each time from a fresh assembly, so the deploy that lands last holds both releases. The job needs pages and id-token write and the github-pages environment.
 
 inputs:
   repository:
@@ -9,6 +9,9 @@ inputs:
   keep:
     description: Releases kept per live branch
     default: "5"
+  builder_ref:
+    description: Ref of linuxserver-playground/builder to pip install, for the shape of each build's vulns.json
+    default: main
 
 outputs:
   page_url:
@@ -23,12 +26,18 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --quiet --user pyyaml
+        # builder shapes vulns.json (CONVENTIONS §6) and brings PyYAML; the publish job installed it for emit-bundle
+        # already, the reason=pages job installs it here. Without it the site is not assembled, so the last deploy
+        # stays rather than one without the scans.
+        python3 -c 'from builder.derive.vulns import document' 2>/dev/null \
+          || python3 -m pip install --quiet --disable-pip-version-check --user \
+            "git+https://github.com/linuxserver-playground/builder@${BUILDER_REF}"
         python3 "${GITHUB_ACTION_PATH}/../../../scripts/pages.py" assemble \
           --repo "${REPOSITORY}" --keep "${KEEP}" --out "${RUNNER_TEMP}/lsio-pages"
       env:
         REPOSITORY: ${{ inputs.repository }}
         KEEP: ${{ inputs.keep }}
+        BUILDER_REF: ${{ inputs.builder_ref }}
         GH_TOKEN: ${{ inputs.github_token }}
       continue-on-error: true
 

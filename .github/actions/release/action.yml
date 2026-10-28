@@ -25,12 +25,10 @@ inputs:
     required: true
   control_url:
     default: ""
-  hub_url:
-    default: ""
   site_url:
     default: ""
   image_name:
-    description: The image name, for the hub results URL
+    description: The image name, for the build's page on the website
     required: true
   repository:
     default: ${{ github.repository }}
@@ -59,7 +57,6 @@ runs:
         MANIFEST: ${{ inputs.manifest }}
         UPSTREAM: ${{ inputs.upstream }}
         CONTROL_URL: ${{ inputs.control_url }}
-        HUB_URL: ${{ inputs.hub_url }}
         SITE_URL: ${{ inputs.site_url }}
         IMAGE_NAME: ${{ inputs.image_name }}
         REPOSITORY: ${{ inputs.repository }}

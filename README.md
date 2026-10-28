@@ -141,11 +141,14 @@ commit it, only the next package check does. The authoritative table of a releas
 ### Pages
 
 Every image repository's GitHub Pages site holds the heavy files of its newest live builds (CONVENTIONS §6,
-"Repo Pages"): `index.json`, and per build `files.<arch>.json.gz`, `packages.<arch>.json.gz` and the unpacked
-`test.<arch>.tar.gz`, for the newest 5 releases of each live branch. Nothing is committed: the `pages` action
-assembles the site from the repository's Releases into an empty directory (`scripts/pages.py`: one GraphQL
-query for the branches and their `image.yml`, the release list, then the assets from their download URLs,
-which cost no REST quota), uploads it with `actions/upload-pages-artifact` and deploys it with
+"Repo Pages"): `index.json`, and per build `files.<arch>.json.gz`, `packages.<arch>.json.gz`, the unpacked
+`test.<arch>.tar.gz` and `vulns.json`, for the newest 5 releases of each live branch. `vulns.json` is the scan the
+build made of itself (`record.json` `vulns`), the image as it was released, shaped by `builder.derive.vulns.document`,
+the one shaping of it; a release whose record has no scan gets none. Nothing rescans it. Nothing is committed: the
+`pages` action installs the builder package (`builder_ref`, unless the job has it already, as the Publish job does
+from `emit-bundle`) and assembles the site from the repository's Releases into an empty directory (`scripts/pages.py`:
+one GraphQL query for the branches and their `image.yml`, the release list, then the assets from their download
+URLs, which cost no REST quota), uploads it with `actions/upload-pages-artifact` and deploys it with
 `actions/deploy-pages`. A deploy refused because another is in progress (two branches of one repository
 released together) is retried after 60 and 120 seconds, each time from a fresh assembly, so the deploy that
 lands last holds both releases; a repository without Pages is not retried.

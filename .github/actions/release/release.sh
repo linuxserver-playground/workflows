@@ -11,6 +11,8 @@ PREVIOUS_TAG="${PREVIOUS_TAG:-}"
 HEAD_ALREADY_RELEASED="${HEAD_ALREADY_RELEASED:-false}"
 CONTROL_URL="${CONTROL_URL:-}"
 IMAGE_NAME="${IMAGE_NAME:?}"
+SITE_URL="${SITE_URL:-}"
+[[ -n "${SITE_URL}" ]] || die "SITE_URL is not set; the release notes link the build's CI results page on the website"
 RUN_URL="${RUN_URL:-}"
 work="${RUNNER_TEMP:-/tmp}/lsio-release"
 mkdir -p "${work}"
@@ -46,14 +48,8 @@ if ! python3 "${scripts}/upstream_notes.py" "${MANIFEST}" "${UPSTREAM}" > "${wor
 fi
 endgroup
 
-# ---- Section 1: CI links: hub results page (rendered from this release's assets), control live status ----
-if [[ -n "${SITE_URL:-}" ]]; then
-  ci_url="${SITE_URL%/}/images/${IMAGE_NAME}/builds/${TAG}/"
-elif [[ -n "${HUB_URL:-}" ]]; then
-  ci_url="${HUB_URL%/}/builds/${IMAGE_NAME}/${TAG}/"
-else
-  ci_url=""
-fi
+# ---- Section 1: CI links: the build's page on the website (CONVENTIONS §10), control live status ----
+ci_url="${SITE_URL%/}/images/${IMAGE_NAME}/builds/${TAG}/"
 if [[ -n "${CONTROL_URL}" ]]; then
   status_url="${CONTROL_URL%/}/builds/${REPOSITORY}/${GITHUB_RUN_ID:-0}"
 else

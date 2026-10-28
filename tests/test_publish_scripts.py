@@ -93,7 +93,7 @@ def _validate(kind: str, data: dict) -> list[str]:
 def test_bundle_live_is_valid(tmp_path):
     out = tmp_path / "out"
     write_out_dir(out)
-    bundle = emit_bundle.build_bundle(prepare_outputs(), out, repository="o/docker-example", run_id=42, run_url="https://github.com/o/docker-example/actions/runs/42", workflows_ref="v1", ci_image="ghcr.io/linuxserver-playground/ci:latest", reason="upstream", index_digest=INDEX, control_url="https://control.example.org", hub_url="https://hub.example.org/hub", site_url="https://www.example.org/site")
+    bundle = emit_bundle.build_bundle(prepare_outputs(), out, repository="o/docker-example", run_id=42, run_url="https://github.com/o/docker-example/actions/runs/42", workflows_ref="v1", ci_image="ghcr.io/linuxserver-playground/ci:latest", reason="upstream", index_digest=INDEX, control_url="https://control.example.org", site_url="https://www.example.org/site")
     assert _validate("bundle", bundle) == []
     assert bundle["version"] == {"upstream": "v1.2.3", "upstream_clean": "v1.2.3", "semver": "1.2.3", "release_tag": "latest", "tags": ["latest", "v1.2.3-ls4", "amd64-latest"], "source": "github_release", "source_url": "https://github.com/o/r/releases/tag/v1.2.3", "ls_build": 4, "tag": "v1.2.3-ls4"}
     assert [p["arch"] for p in bundle["platforms"]] == ["amd64", "arm64"]
@@ -140,9 +140,14 @@ def test_emit_bundle_cli_validates(tmp_path, monkeypatch):
     (tmp_path / "prepare.json").write_text(json.dumps(prepare_outputs()))
     monkeypatch.setenv("GITHUB_OUTPUT", str(tmp_path / "gh_out"))
     monkeypatch.setenv("GITHUB_STEP_SUMMARY", str(tmp_path / "summary.md"))
-    rc = emit_bundle.main(["--out", str(out), "--prepare", str(tmp_path / "prepare.json"), "--repository", "o/docker-example", "--run-id", "5", "--run-url", "https://x/5", "--workflows-ref", "v1", "--ci-image", "ci:1", "--reason", "rebuild"])
+    args = ["--out", str(out), "--prepare", str(tmp_path / "prepare.json"), "--repository", "o/docker-example", "--run-id", "5", "--run-url", "https://x/5", "--workflows-ref", "v1", "--ci-image", "ci:1", "--reason", "rebuild"]
+    # A live build links its page on the website, so it needs SITE_URL; there is no fallback to the hub.
+    assert emit_bundle.main(args) == 1 and not (out / "build.json").exists()
+    rc = emit_bundle.main([*args, "--site-url", "https://www.example.org/site/"])
     assert rc == 0
-    assert json.loads((out / "build.json").read_text())["workflow"]["ci_version"] == "1"
+    bundle = json.loads((out / "build.json").read_text())
+    assert bundle["workflow"]["ci_version"] == "1"
+    assert bundle["test"]["report_url"] == "https://www.example.org/site/images/example/builds/v1.2.3-ls4/"
     assert "Build bundle" in (tmp_path / "summary.md").read_text()
 
 
