@@ -598,6 +598,7 @@ jobs:
         uses: ./.lsio-workflows/.github/actions/pages
         with:
           builder_ref: ${{ inputs.builder_ref }}
+          site_url: ${{ vars.SITE_URL }}
 
       - name: Notify control plane
         if: always()
@@ -721,3 +722,4 @@ jobs:
         uses: ./.lsio-workflows/.github/actions/pages
         with:
           builder_ref: ${{ inputs.builder_ref }}
+          site_url: ${{ vars.SITE_URL }}

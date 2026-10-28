@@ -188,3 +188,123 @@ def test_assemble_trims_old_builds_over_the_size_limit(tmp_path: Path):
     # The oldest build that is not its branch's newest goes first; every branch keeps its newest.
     assert [b["tag"] for b in index["builds"]] == ["1.0-ls3", "develop-1-ls1"]
     assert sorted(p.name for p in (tmp_path / "site" / "builds").iterdir()) == ["1.0-ls3", "develop-1-ls1"]
+
+
+def bundle(tag: str, upstream: str, previous: str | None = None) -> dict:
+    """A minimal build.json, as much of it as the documents read."""
+    names = ("packages.amd64.json.gz", "layers.amd64.json", "test.amd64.json", "files.amd64.json.gz")
+    return {
+        "schema": 1,
+        "image": "example",
+        "repository": REPO,
+        "branch": "master",
+        "mode": "live",
+        "version": {"upstream": upstream, "upstream_clean": upstream, "ls_build": 1, "tag": tag,
+                    "release_tag": "latest", "tags": ["latest", tag, f"amd64-{tag}"]},
+        "commit": SHA,
+        "created": "2026-10-02T00:00:00Z",
+        "reason": "upstream",
+        "base": {"family": "alpine", "image": "ghcr.io/linuxserver-playground/baseimage-alpine:3.24",
+                 "digest": "sha256:" + "b" * 64},
+        "platforms": [{"arch": "amd64", "result": "success", "size": 100}],
+        "labels": {},
+        "config": {"env": ["A=1"]},
+        "dockerfile": {"amd64": "FROM x\nRUN apk add curl\n"},
+        "test": {"enabled": True, "success": True},
+        "assets": [{"name": n, "size": 1, "sha256": "0" * 64, "url": f"{BASE}/{tag}/{n}"} for n in names],
+        "workflow": {"run_id": 1, "run_url": f"https://github.com/{REPO}/actions/runs/1", "workflows_ref": "v1"},
+        **({"previous": {"tag": previous}} if previous else {}),
+    }
+
+
+def syft(*packages: tuple[str, str]) -> bytes:
+    return gzip.compress(json.dumps({"artifacts": [{"name": n, "version": v, "type": "apk"} for n, v in packages]}).encode())
+
+
+LAYERS = [
+    {"index": 0, "digest": "sha256:" + "1" * 64, "size": 5, "created_by": "ADD rootfs / # buildkit"},
+    {"index": 1, "digest": "sha256:" + "2" * 64, "size": 5, "created_by": "RUN /bin/sh -c apk add curl # buildkit"},
+]
+REPORT = {"schema": 1, "image": "example", "tag": "1.0-ls2", "arch": "amd64", "success": True,
+          "started": "2026-10-02T00:00:00Z", "finished": "2026-10-02T00:01:00Z",
+          "tests": [{"name": "Container startup", "status": "PASS"}], "files": {"screenshot": "screenshot.png"}}
+
+
+def test_assemble_writes_every_document_from_the_record_or_the_assets(tmp_path: Path):
+    old, new = bundle("1.0-ls1", "1.0"), bundle("1.0-ls2", "1.1", previous="1.0-ls1")
+    old_record = {"schema": 1, "image": "example", "tag": "1.0-ls1", "packages": {"amd64": [
+        {"name": "curl", "version": "8.0", "type": "apk", "purl": None, "licenses": []}]},
+        "layers": {"amd64": LAYERS}, "tests": {}, "diff": {"image": "example", "branch": "master", "tag": "1.0-ls1",
+        "previous_tag": None, "classification": "initial", "reasons": [], "totals": {},
+        "upstream": {"from": None, "to": "1.0", "changed": False}}, "vulns": {}, "errors": [],
+        "base": {"image": old["base"]["image"], "digest": old["base"]["digest"],
+                 "platforms": {"amd64": {"digest": None, "layers": [LAYERS[0]["digest"]]}}}}
+    blobs = {
+        f"{BASE}/1.0-ls1/build.json": json.dumps(old).encode(),
+        f"{BASE}/1.0-ls1/record.json": json.dumps(old_record).encode(),
+        # 1.0-ls2 predates record.json: its documents are derived from its other assets, its diff against 1.0-ls1
+        f"{BASE}/1.0-ls2/build.json": json.dumps(new).encode(),
+        f"{BASE}/1.0-ls2/packages.amd64.json.gz": syft(("curl", "8.1"), ("jq", "1.7")),
+        f"{BASE}/1.0-ls2/layers.amd64.json": json.dumps(LAYERS).encode(),
+        f"{BASE}/1.0-ls2/test.amd64.json": json.dumps(REPORT).encode(),
+    }
+    fetched: list[str] = []
+
+    def fetch(url: str) -> bytes | None:
+        fetched.append(url)
+        return blobs.get(url)
+
+    bases: list[str | None] = []
+
+    def base_layers(image: str, digest: str | None) -> dict:
+        bases.append(digest)
+        return {"image": image, "digest": digest, "platforms": {"amd64": {"layers": [LAYERS[0]["digest"]]}}}
+
+    rel1 = release("1.0-ls1", "master", "2026-10-01T00:00:00Z", ("build.json", "record.json"))
+    rel2 = release("1.0-ls2", "master", "2026-10-02T00:00:00Z", ("build.json", "packages.amd64.json.gz",
+                                                                  "layers.amd64.json", "test.amd64.json"))
+    rel2["html_url"] = f"https://github.com/{REPO}/releases/tag/1.0-ls2"
+    releases = pages.Releases([rel2, rel1], fetch, base_layers)
+    site = "https://linuxserver-playground.github.io/site/"
+    out = tmp_path / "site"
+    pages.assemble(out, REPO, [("master", rel2), ("master", rel1)], fetch, workers=2, releases=releases, site=site)
+
+    root = "https://linuxserver-playground.github.io/docker-example/builds/1.0-ls2/"
+    build = out / "builds" / "1.0-ls2"
+    assert sorted(p.name for p in build.iterdir() if p.is_file()) == [
+        "build.json", "diff.json", "layers.amd64.json", "packages.amd64.json", "packages.amd64.json.gz", "report.json",
+        "tests.json"]
+    assert (build / "build.json").read_bytes() == blobs[f"{BASE}/1.0-ls2/build.json"]  # as attached
+    diff = json.loads((build / "diff.json").read_text())
+    assert diff["previous_tag"] == "1.0-ls1" and diff["classification"] == "upstream"
+    assert diff["packages"]["amd64"]["apk"]["added"][0]["name"] == "jq"  # against 1.0-ls1's record packages
+    layers = json.loads((build / "layers.amd64.json").read_text())
+    assert layers["from_base_source"] == "registry" and layers["layers"][1]["dockerfile_lines"] == [2, 2]
+    assert bases == [new["base"]["digest"]]  # asked once, for the release without a record
+    table = json.loads((build / "packages.amd64.json").read_text())
+    assert table["count"] == 2 and table["packages"][0] == {"name": "curl", "version": "8.1", "type": "apk",
+                                                           "licenses": []}
+    tests = json.loads((build / "tests.json").read_text())
+    assert tests["report_url"] == f"{site}images/example/builds/1.0-ls2/"
+    assert tests["summary"]["amd64"]["files"] == {"screenshot": f"{root}amd64/screenshot.png"}
+    report = json.loads((build / "report.json").read_text())
+    assert report["links"]["report"] == f"{root}report.json" and report["links"]["tests"] == f"{root}tests.json"
+    assert report["links"]["release"] == rel2["html_url"] and "vulns" not in report["links"]
+    assert report["tags"] == new["version"]["tags"] and "is_newest" not in report
+    # 1.0-ls1 has a record: nothing else is read for its documents, and its diff is the record's.
+    first = out / "builds" / "1.0-ls1"
+    assert json.loads((first / "diff.json").read_text())["classification"] == "initial"
+    assert json.loads((first / "layers.amd64.json").read_text())["from_base_source"] == "registry"
+    assert json.loads((first / "packages.amd64.json").read_text())["count"] == 1
+    assert not (first / "tests.json").exists()
+    # Every asset downloaded at most once per release it belongs to (1.0-ls1's build.json and record.json are read
+    # again as 1.0-ls2's previous release, which is all the extra a release without a record costs).
+    assert sorted(fetched) == sorted([*blobs, f"{BASE}/1.0-ls1/build.json", f"{BASE}/1.0-ls1/record.json"])
+
+
+def test_a_release_without_a_readable_build_json_keeps_its_files_only(tmp_path: Path):
+    rel = release("1.0-ls3", "master", "2026-10-03T00:00:00Z", ("build.json", "packages.amd64.json.gz"))
+    blobs = {f"{BASE}/1.0-ls3/build.json": b"{broken", f"{BASE}/1.0-ls3/packages.amd64.json.gz": b"pkg"}
+    releases = pages.Releases([rel], blobs.get, None)
+    pages.assemble(tmp_path / "site", REPO, [("master", rel)], blobs.get, workers=1, releases=releases, site="x")
+    assert sorted(p.name for p in (tmp_path / "site" / "builds" / "1.0-ls3").iterdir()) == ["packages.amd64.json.gz"]

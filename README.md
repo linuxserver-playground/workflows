@@ -142,11 +142,19 @@ commit it, only the next package check does. The authoritative table of a releas
 
 ### Pages
 
-Every image repository's GitHub Pages site holds the heavy files of its newest live builds (CONVENTIONS §6,
-"Repo Pages"): `index.json`, and per build `files.<arch>.json.gz`, `packages.<arch>.json.gz`, the unpacked
-`test.<arch>.tar.gz` and `vulns.json`, for the newest 5 releases of each live branch. `vulns.json` is the scan the
-build made of itself (`record.json` `vulns`), the image as it was released, shaped by `builder.derive.vulns.document`,
-the one shaping of it; a release whose record has no scan gets none. Nothing rescans it. Nothing is committed: the
+Every image repository's GitHub Pages site holds everything about its newest live builds (CONVENTIONS §6,
+"Repo Pages"): `index.json`, and per build its documents (`build.json` as attached; `report.json`, `tests.json`,
+`diff.json`, `layers.<arch>.json` and `packages.<arch>.json` from `builder.derive.documents`; `vulns.json`) and its
+heavy files (`files.<arch>.json.gz`, `packages.<arch>.json.gz`, the unpacked `test.<arch>.tar.gz`), for the newest 5
+releases of each live branch. The documents are copies of what the hub's API serves for the build, without its
+envelope and with their links pointing at this site; the hub stays their API, and nothing depends on the copies. They
+are shaped by the same `builder.derive.documents` the hub renders with, and come from `record.json` where the build derived them; for a release without one
+(or a part it lacks) from the other assets with the code `builder record` runs: the syft documents normalised, the
+layer lists and test reports as attached, the diff against the release `build.json` `previous.tag` names (its
+build.json and record.json or syft documents, read only then), the base image's layers from the registry once per
+digest. `vulns.json` is the scan the build made of itself (`record.json` `vulns`), the image as it was released,
+shaped by `builder.derive.vulns.document`; a release whose record has no scan gets none. Nothing rescans it. The
+documents link the website at `SITE_URL` (the org variable; the `site_url` input). Nothing is committed: the
 `pages` action installs the builder package (`builder_ref` with `scripts/install_builder.sh`, unless the job has it
 already, as the Publish job does from `emit-bundle`) and assembles the site from the repository's Releases into an empty directory (`scripts/pages.py`:
 one GraphQL query for the branches and their `image.yml`, the release list, then the assets from their download
@@ -159,10 +167,10 @@ lands last holds both releases; a repository without Pages is not retried.
   to the control plane, with `continue-on-error`: it never fails the release, and a lost deploy is repaired by the
   next. The order is the release path's: the event makes control dispatch the hub, which lists the build, and
   holds the release's announcement until the build's page on the website is live; that page reads the build's
-  screenshot, report files, file trees and `vulns.json` from this site, so they are deployed first. Since the step
-  cannot fail the run, the event carries its outcome as `pages`: `deployed` (`page_url` set), `failed` (attempted,
-  nothing deployed: control re-dispatches `reason: pages`) or `skipped` (no release). The deploy (about a minute, up
-  to three more with the retries) is the release path's only added wait. deploy-pages wants a job in the `github-pages` environment, so the Publish job enters
+  documents from this site, so they are deployed first. Since the step cannot fail the run, the event carries its
+  outcome as `pages`: `deployed` (`page_url` set), `failed` (attempted, nothing deployed: control re-dispatches
+  `reason: pages`) or `skipped` (no release). The deploy (about a minute, up to three more with the retries) is
+  the release path's only added wait. deploy-pages wants a job in the `github-pages` environment, so the Publish job enters
   it, but only on a run that can release (live, pushing, not a package check): every other run gets an empty
   environment name, which is none, and leaves no deployment behind. A step, not a job: every job waits for one of
   the 20 runner slots on its own, and the release path takes no extra wait.

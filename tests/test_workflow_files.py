@@ -248,6 +248,8 @@ def test_pages_deploys_after_a_live_release_and_alone_for_reason_pages():
     notify = publish["steps"][names.index("Notify control plane")]["with"]
     assert notify["pages"] == "${{ steps.pages.outcome == 'skipped' && 'skipped' || (steps.pages.outputs.page_url != '' && 'deployed' || 'failed') }}"
     assert steps["bundle"]["with"]["published"] == "${{ steps.manifest.outputs.published }}"
+    assert steps["pages"]["with"]["site_url"] == "${{ vars.SITE_URL }}"
+    assert wf["jobs"]["pages"]["steps"][-1]["with"]["site_url"] == "${{ vars.SITE_URL }}"
     assert steps["pages"]["if"] == "${{ !cancelled() && steps.release.outcome == 'success' }}"
     assert steps["pages"]["continue-on-error"] is True
     assert steps["pages"]["uses"] == "./.lsio-workflows/.github/actions/pages"

@@ -2,13 +2,15 @@
 """
 pages: assemble an image repository's GitHub Pages site from its GitHub Releases (CONVENTIONS §6, "Repo Pages").
 
-The site is the browser-readable home of each build's heavy files: the newest KEEP releases of every live branch,
-each with its file trees and package documents as the Release has them, its test tarballs unpacked as the hub
-unpacks them, and its vulns.json: the scan record.json holds, shaped by builder.derive.vulns.document (the builder
-package, installed by the action), the state of the image as it was released. Nothing is committed anywhere: every run starts from an empty directory and reads the Releases, so
-the last deploy is complete whatever an earlier one missed.
+The site is the browser-readable home of the newest KEEP releases of every live branch: copies of their documents
+(build.json as attached; report.json, tests.json, diff.json, layers.<arch>.json and packages.<arch>.json made by
+builder.derive.documents, the code the hub's API renders them with, from record.json, or from the other assets for a
+release without one; the hub stays their API and nothing depends on these copies), vulns.json (the scan
+record.json holds, shaped by builder.derive.vulns.document, the state of the image as it was released), the file trees and syft documents as the Release has them, and its test tarballs unpacked as the hub unpacked them. The
+builder package is installed by the action. Nothing is committed anywhere: every run starts from an empty directory
+and reads the Releases, so the last deploy is complete whatever an earlier one missed.
 
-    python3 pages.py assemble --out <dir> [--repo owner/repo] [--keep 5]
+    python3 pages.py assemble --out <dir> [--repo owner/repo] [--keep 5] [--site-url URL]
 
 A branch is live when its own image.yml names it in `release.branch`. A release belongs to the branch its
 `target_commitish` names; a release with a sha target to the branch whose release tag prefixes its tag (longest
@@ -32,6 +34,8 @@ import re
 import shutil
 import sys
 import tarfile
+import threading
+import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -269,42 +273,179 @@ def _image_name(repo: str) -> str:
     return repo.rsplit("/", 1)[-1].removeprefix("docker-")
 
 
-def build_files(release: Json, fetch: Fetch, image: str = "") -> tuple[list[str], dict[str, bytes]]:
-    """The arches a release has and its files under builds/<tag>/."""
-    assets = {a.get("name"): a.get("browser_download_url") for a in release.get("assets") or [] if a.get("name")}
+def _json_bytes(doc: Any) -> bytes:
+    return (json.dumps(doc, separators=(",", ":"), ensure_ascii=False) + "\n").encode("utf-8")
+
+
+def _parse(data: bytes | None) -> Any:
+    try:
+        return json.loads(data) if data else None
+    except (ValueError, UnicodeDecodeError):
+        return None
+
+
+def pages_url(repo: str) -> str:
+    """The repository's Pages site, `https://<owner>.github.io/<repo>`, without a trailing slash."""
+    owner, name = repo.split("/", 1)
+    return f"https://{owner.lower()}.github.io/{name}"
+
+
+class Releases:
+    """
+    What the documents of one release need from the others: the previous release of its branch, by the tag build.json
+    names (`previous.tag`), for the diff of a release without a record.json (`builder.derive.documents.parts`), and
+    the base image layers the registry publishes, once per base digest. Read only when a release needs them.
+    """
+
+    def __init__(self, releases: list[Json], fetch: Fetch, fetch_base: Callable[[str, str | None], Json] | None) -> None:
+        self.by_tag = {str(r.get("tag_name")): r for r in releases if r.get("tag_name")}
+        self.fetch = fetch
+        self._fetch_base = fetch_base
+        self._bases: dict[str, Json | Exception] = {}
+        self._lock = threading.Lock()
+
+    def previous(self, tag: str) -> tuple[Json, dict[str, list[Json]] | None] | None:
+        """build.json of the release `tag` and its package rows per architecture (its record.json's, else its syft
+        documents normalised), or None when it has no readable build.json."""
+        from builder.derive.packages import normalise_gz  # noqa: PLC0415 - installed by the action
+
+        release = self.by_tag.get(tag)
+        if release is None:
+            return None
+        assets = _assets(release)
+        bundle = _parse(self.fetch(assets["build.json"])) if assets.get("build.json") else None
+        if not isinstance(bundle, dict):
+            return None
+        record = _parse(self.fetch(assets["record.json"])) if assets.get("record.json") else None
+        if isinstance(record, dict) and record.get("tag") == tag and record.get("packages"):
+            return bundle, dict(record["packages"])
+        rows: dict[str, list[Json]] = {}
+        for arch in ARCHES:
+            url = assets.get(f"packages.{arch}.json.gz")
+            if url and (data := self.fetch(url)) is not None:
+                try:
+                    rows[arch] = normalise_gz(data)
+                except (OSError, ValueError, EOFError):
+                    continue
+        return bundle, rows or None
+
+    def base(self, image: str, digest: str | None) -> Json:
+        """The base image's layer digests from its registry (`builder.derive.registry.base_layers`), cached."""
+        key = f"{image}@{digest}"
+        with self._lock:
+            known = self._bases.get(key)
+        if known is None:
+            if self._fetch_base is None:
+                raise LookupError("no registry lookups")
+            try:
+                known = self._fetch_base(image, digest)
+            except Exception as err:  # noqa: BLE001 - remembered, so a refusing registry is asked once per run
+                known = err
+            with self._lock:
+                self._bases[key] = known
+        if isinstance(known, Exception):
+            raise known
+        return known
+
+
+def _assets(release: Json) -> dict[str, str]:
+    return {str(a["name"]): str(a["browser_download_url"]) for a in release.get("assets") or [] if a.get("name")}
+
+
+def build_documents(
+    release: Json, read: Callable[[str], bytes | None], releases: Releases, *, root: str, site: str
+) -> dict[str, bytes]:
+    """
+    The release's documents under builds/<tag>/ (CONVENTIONS §6): build.json as attached, and diff.json, tests.json,
+    layers.<arch>.json, packages.<arch>.json, report.json and vulns.json from builder.derive (`documents`, `vulns`),
+    from record.json where the build derived them and the other assets where it did not. Empty for a release without
+    a readable build.json: its files are still served, its documents are not.
+    """
+    from builder.derive import documents  # noqa: PLC0415 - installed by the action, not needed to select
+
+    tag = str(release.get("tag_name") or "")
+    raw = read("build.json")
+    bundle = _parse(raw)
+    if not isinstance(bundle, dict) or (bundle.get("version") or {}).get("tag") != tag:
+        gha.warning(f"{tag}: no readable build.json for this release; its documents are left out of Pages")
+        return {}
+    record = _parse(read("record.json"))
+    files: dict[str, bytes] = {"build.json": raw or b""}
+    vulns = vulns_json(_json_bytes(record) if isinstance(record, dict) else None, str(bundle["image"]), tag)
+    if vulns is not None:
+        files["vulns.json"] = vulns
+    try:
+        parts = documents.parts(bundle, record, read, previous=releases.previous, fetch_base=releases.base)
+        for note in parts.notes:
+            print(f"pages: {note}", file=sys.stderr)
+        docs = documents.documents(
+            bundle,
+            pages=f"{root}/builds/{tag}/",
+            site=site,
+            diff=parts.diff,
+            reports=parts.reports,
+            layer_rows=parts.layer_rows,
+            package_rows=parts.package_rows,
+            base=parts.base,
+            release=str(release.get("html_url") or "") or None,
+            vulns=vulns is not None,
+        )
+    except (KeyError, TypeError, ValueError) as err:
+        gha.warning(f"{tag}: its documents could not be made ({type(err).__name__}: {err}); only build.json is served")
+        return files
+    files.update({name: _json_bytes(doc) for name, doc in docs.items()})
+    return files
+
+
+def build_files(
+    release: Json,
+    fetch: Fetch,
+    image: str = "",
+    *,
+    releases: Releases | None = None,
+    root: str = "",
+    site: str = "",
+) -> tuple[list[str], dict[str, bytes]]:
+    """The arches a release has and its files under builds/<tag>/: its documents, file trees, syft documents and test
+    reports. Every asset is downloaded at most once."""
+    assets = _assets(release)
+    cache: dict[str, bytes | None] = {}
+
+    def read(name: str) -> bytes | None:
+        if name not in cache:
+            cache[name] = fetch(assets[name]) if assets.get(name) else None
+        return cache[name]
+
     files: dict[str, bytes] = {}
-    arches: list[str] = []
-    if assets.get("record.json"):
+    if releases is not None:
+        files.update(build_documents(release, read, releases, root=root, site=site))
+    elif assets.get("record.json"):
         tag = str(release.get("tag_name") or "")
         try:
-            vulns = vulns_json(fetch(assets["record.json"]), image, tag)
+            vulns = vulns_json(read("record.json"), image, tag)
         except (KeyError, TypeError, ValueError) as err:
             gha.warning(f"{tag}: record.json has no usable scan: {err}")
             vulns = None
         if vulns is not None:
             files["vulns.json"] = vulns
+    arches: list[str] = []
     for arch in ARCHES:
         names = (f"files.{arch}.json.gz", f"packages.{arch}.json.gz", f"test.{arch}.tar.gz")
         if not any(assets.get(n) for n in names):
             continue
         arches.append(arch)
         for name in names[:2]:
-            if assets.get(name) and (data := fetch(assets[name])) is not None:
+            if (data := read(name)) is not None:
                 files[name] = data
-        tarball = assets.get(f"test.{arch}.tar.gz")
-        if tarball and (data := fetch(tarball)) is not None:
-            report_url = assets.get(f"test.{arch}.json")
-            report_bytes = fetch(report_url) if report_url else None
-            try:
-                report = json.loads(report_bytes) if report_bytes else None
-            except ValueError:
-                report = None
+        if (data := read(f"test.{arch}.tar.gz")) is not None:
+            report = _parse(read(f"test.{arch}.json"))
             try:
                 unpacked = unpack(data, report if isinstance(report, dict) else None)
             except (tarfile.TarError, OSError, EOFError) as err:
                 gha.warning(f"{release.get('tag_name')}: test.{arch}.tar.gz does not unpack: {err}")
                 unpacked = {}
             files.update({f"{arch}/{name}": content for name, content in unpacked.items()})
+            cache.pop(f"test.{arch}.tar.gz", None)  # the tarballs are the big ones: not kept once unpacked
     return arches, files
 
 
@@ -335,15 +476,22 @@ def assemble(
     now: str | None = None,
     limit: int = MAX_SITE_BYTES,
     workers: int = 8,
+    releases: Releases | None = None,
+    site: str = "",
 ) -> Json:
-    """Write the site into `out` (emptied first) and return index.json."""
+    """Write the site into `out` (emptied first) and return index.json. With `releases`, each build's documents too."""
     if out.exists():
         shutil.rmtree(out)
     (out / "builds").mkdir(parents=True)
     builds: list[Json] = []
     sizes: dict[str, int] = {}
     with concurrent.futures.ThreadPoolExecutor(max_workers=workers) as pool:
-        results = list(pool.map(lambda br: build_files(br[1], fetch, _image_name(repo)), selected))
+        results = list(
+            pool.map(
+                lambda br: build_files(br[1], fetch, _image_name(repo), releases=releases, root=pages_url(repo), site=site),
+                selected,
+            )
+        )
     for (branch, release), (arches, files) in zip(selected, results, strict=True):
         tag = str(release["tag_name"])
         sizes[tag] = sum(_write(out / "builds" / tag, name, content) for name, content in files.items())
@@ -371,18 +519,32 @@ def main(argv: list[str]) -> int:
     a.add_argument("--out", required=True, type=Path)
     a.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", ""))
     a.add_argument("--keep", type=int, default=KEEP)
+    a.add_argument(
+        "--site-url",
+        default=os.environ.get("SITE_URL") or "",
+        help="the website's root, which the documents link (default https://<owner>.github.io/site/)",
+    )
     args = ap.parse_args(argv)
     if not re.fullmatch(r"[\w.-]+/[\w.-]+", args.repo):
         ap.error("--repo owner/repo is required")
 
+    from builder.derive.registry import base_layers  # noqa: PLC0415 - installed by the action
+
     default, texts = read_branches(args.repo)
     live = live_branches(default, texts)
-    selected = select(list_releases(args.repo), live, default, args.keep)
+    every = list_releases(args.repo)
+    selected = select(every, live, default, args.keep)
     token = os.environ.get("GH_TOKEN") or os.environ.get("GITHUB_TOKEN") or ""
-    index = assemble(args.out, args.repo, selected, make_fetch(token), args.keep)
+    fetch = make_fetch(token)
+    owner = args.repo.split("/", 1)[0]
+    site = args.site_url or f"https://{owner.lower()}.github.io/site/"
+    started = time.monotonic()
+    index = assemble(
+        args.out, args.repo, selected, fetch, args.keep, releases=Releases(every, fetch, base_layers), site=site
+    )
     size = _size(args.out)
-    owner, name = args.repo.split("/", 1)
-    url = f"https://{owner.lower()}.github.io/{name}"
+    url = pages_url(args.repo)
+    print(f"assembled in {time.monotonic() - started:.1f}s", file=sys.stderr)
     print(f"{len(index['builds'])} builds of {len(live)} live branches, {size / 1024 / 1024:.1f} MiB in {args.out}")
     gha.set_outputs({"dir": str(args.out), "builds": len(index["builds"]), "bytes": size, "url": url})
     gha.summary(f"Pages: {len(index['builds'])} builds of {len(live)} live branches, {size / 1024 / 1024:.1f} MiB, {url}/")

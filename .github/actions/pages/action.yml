@@ -1,5 +1,5 @@
 name: pages
-description: Assemble the repository's GitHub Pages site from its Releases (CONVENTIONS §6, "Repo Pages") with scripts/pages.py, each build's vulns.json shaped by the builder package, and deploy it. Stateless, so a lost deploy is repaired by the next one. A deploy refused because another is in progress (two branches of one repository releasing together) is tried twice more, each time from a fresh assembly, so the deploy that lands last holds both releases. The job needs pages and id-token write and the github-pages environment.
+description: Assemble the repository's GitHub Pages site from its Releases (CONVENTIONS §6, "Repo Pages") with scripts/pages.py, each build's documents shaped by the builder package (builder.derive.documents), and deploy it. Stateless, so a lost deploy is repaired by the next one. A deploy refused because another is in progress (two branches of one repository releasing together) is tried twice more, each time from a fresh assembly, so the deploy that lands last holds both releases. The job needs pages and id-token write and the github-pages environment.
 
 inputs:
   repository:
@@ -10,8 +10,11 @@ inputs:
     description: Releases kept per live branch
     default: "5"
   builder_ref:
-    description: Ref of linuxserver-playground/builder to install, for the shape of each build's vulns.json
+    description: Ref of linuxserver-playground/builder to install, which shapes each build's documents
     default: main
+  site_url:
+    description: The website's root, which each build's documents link; empty is https://<owner>.github.io/site/
+    default: ""
 
 outputs:
   page_url:
@@ -26,10 +29,10 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        # builder shapes vulns.json (CONVENTIONS §6) and brings PyYAML; the publish job installed it for emit-bundle
-        # already, the reason=pages job installs it here. Without it the site is not assembled, so the last deploy
-        # stays rather than one without the scans.
-        bash "${GITHUB_ACTION_PATH}/../../../scripts/install_builder.sh" "${BUILDER_REF}" builder.derive.vulns
+        # builder shapes every build's documents (builder.derive.documents, CONVENTIONS §6) and brings PyYAML; the
+        # publish job installed it for emit-bundle already, the reason=pages job installs it here. Without it the site
+        # is not assembled, so the last deploy stays rather than one without the documents.
+        bash "${GITHUB_ACTION_PATH}/../../../scripts/install_builder.sh" "${BUILDER_REF}" builder.derive.documents
         python3 "${GITHUB_ACTION_PATH}/../../../scripts/pages.py" assemble \
           --repo "${REPOSITORY}" --keep "${KEEP}" --out "${RUNNER_TEMP}/lsio-pages"
       env:
@@ -37,6 +40,7 @@ runs:
         KEEP: ${{ inputs.keep }}
         BUILDER_REF: ${{ inputs.builder_ref }}
         GH_TOKEN: ${{ inputs.github_token }}
+        SITE_URL: ${{ inputs.site_url }}
       continue-on-error: true
 
     - name: Upload the Pages artifact
@@ -77,6 +81,7 @@ runs:
         REPOSITORY: ${{ inputs.repository }}
         KEEP: ${{ inputs.keep }}
         GH_TOKEN: ${{ inputs.github_token }}
+        SITE_URL: ${{ inputs.site_url }}
         LSIO_SUMMARY: /dev/stdout
       continue-on-error: true
 
@@ -120,6 +125,7 @@ runs:
         REPOSITORY: ${{ inputs.repository }}
         KEEP: ${{ inputs.keep }}
         GH_TOKEN: ${{ inputs.github_token }}
+        SITE_URL: ${{ inputs.site_url }}
         LSIO_SUMMARY: /dev/stdout
       continue-on-error: true
 
