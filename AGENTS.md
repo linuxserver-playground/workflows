@@ -30,7 +30,9 @@ Everything, by pull request. Keep the shape: an action's `action.yml` only decla
 calls its script; bash scripts start with `set -euo pipefail` and source `scripts/lib.sh`; Python is stdlib
 only (PyYAML is installed in the step when needed, the contracts package comes from the builder repo).
 `scripts/resolve_version.py` must stay importable without GitHub Actions context because the control plane
-uses it. Third-party actions are pinned by major tag and listed in README.md (a test enforces both). Nothing
+uses it, as one file (no sibling imports). Every network call goes through `retry` or `retry_ghcr` (`lib.sh`) or
+`scripts/netretry.py`, which retry network failures, 5xx and throttling only (README "Network retries"); change
+their pattern lists together. Third-party actions are pinned by major tag and listed in README.md (a test enforces both). Nothing
 may reference a registry or namespace outside `linuxserver-playground` other than
 `ghcr.io/linuxserver/baseimage-*`. Released tags are only ever written by `publish-manifest`, after every
 arch job succeeded; anything that runs earlier pushes to the `build/` staging namespace. The two bot commits

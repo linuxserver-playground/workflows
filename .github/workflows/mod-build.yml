@@ -76,7 +76,9 @@ jobs:
         id: version
         run: |
           set -euo pipefail
-          python3 -c 'import yaml' 2>/dev/null || python3 -m pip install --quiet --user pyyaml
+          # shellcheck source=/dev/null
+          source "${WORKFLOWS_PATH}/scripts/lib.sh"
+          python3 -c 'import yaml' 2>/dev/null || retry python3 -m pip install --quiet --user pyyaml
           python3 "${WORKFLOWS_PATH}/scripts/mod_version.py" mod.yml \
             --version "${INPUT_VERSION}" --line "${INPUT_LINE}" --output "${GITHUB_OUTPUT}"
         env:
@@ -169,6 +171,18 @@ jobs:
           ref: ${{ github.event.pull_request.head.sha || github.sha }}
           persist-credentials: false
 
+      # Only lib.sh, for the retries. The build step sources it and removes the checkout, so the build context is the
+      # mod branch alone.
+      - name: Check out workflows
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.WORKFLOWS_REPOSITORY }}
+          ref: ${{ inputs.workflows_ref }}
+          path: ${{ env.WORKFLOWS_PATH }}
+          persist-credentials: false
+          sparse-checkout: scripts/lib.sh
+          sparse-checkout-cone-mode: false
+
       - name: Set up buildx
         uses: docker/setup-buildx-action@v4
 
@@ -183,6 +197,9 @@ jobs:
       - name: Build and push
         run: |
           set -euo pipefail
+          # shellcheck source=/dev/null
+          source "${WORKFLOWS_PATH}/scripts/lib.sh"
+          rm -rf "${WORKFLOWS_PATH}"
           platform="linux/${ARCH}"
           [[ "${ARCH}" == "arm64" ]] && platform="linux/arm64/v8"
           args=(--no-cache --pull --platform "${platform}"
@@ -197,10 +214,10 @@ jobs:
           fi
           tag="${IMAGE_PATH}:${PREFIX}-${PRIMARY_TAG}"
           if [[ "${PUSH}" == "true" ]]; then
-            docker buildx build "${args[@]}" --push -t "${tag}" .
+            retry_ghcr docker buildx build "${args[@]}" --push -t "${tag}" .
             echo "pushed \`${tag}\`" >> "${GITHUB_STEP_SUMMARY}"
           else
-            docker buildx build "${args[@]}" --load -t "${tag}" .
+            retry_ghcr docker buildx build "${args[@]}" --load -t "${tag}" .
             echo "built \`${tag}\` (not pushed)" >> "${GITHUB_STEP_SUMMARY}"
           fi
         env:
@@ -224,6 +241,16 @@ jobs:
       packages: write
       pull-requests: write
     steps:
+      - name: Check out workflows
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.WORKFLOWS_REPOSITORY }}
+          ref: ${{ inputs.workflows_ref }}
+          path: ${{ env.WORKFLOWS_PATH }}
+          persist-credentials: false
+          sparse-checkout: scripts/lib.sh
+          sparse-checkout-cone-mode: false
+
       - name: Log in to GHCR
         uses: docker/login-action@v4
         with:
@@ -237,18 +264,20 @@ jobs:
       - name: Create manifests
         run: |
           set -euo pipefail
+          # shellcheck source=/dev/null
+          source "${WORKFLOWS_PATH}/scripts/lib.sh"
           mapfile -t tags < <(jq -r '.[]' <<< "${TAGS}")
           mapfile -t prefixes < <(jq -r '.include[].prefix' <<< "${MATRIX}")
           sources=()
           for p in "${prefixes[@]}"; do sources+=("${IMAGE_PATH}:${p}-${PRIMARY_TAG}"); done
           targets=()
           for t in "${tags[@]}"; do targets+=(-t "${IMAGE_PATH}:${t}"); done
-          docker buildx imagetools create "${targets[@]}" "${sources[@]}"
+          retry_ghcr docker buildx imagetools create "${targets[@]}" "${sources[@]}"
           if (( ${#prefixes[@]} > 1 )); then
             for p in "${prefixes[@]}"; do
               twins=()
               for t in "${tags[@]}"; do [[ "${t}" != "${PRIMARY_TAG}" ]] && twins+=(-t "${IMAGE_PATH}:${p}-${t}"); done
-              (( ${#twins[@]} )) && docker buildx imagetools create "${twins[@]}" "${IMAGE_PATH}:${p}-${PRIMARY_TAG}"
+              (( ${#twins[@]} )) && retry_ghcr docker buildx imagetools create "${twins[@]}" "${IMAGE_PATH}:${p}-${PRIMARY_TAG}"
             done
           fi
           {
@@ -264,16 +293,18 @@ jobs:
       - name: Comment on pull request
         if: needs.plan.outputs.mode == 'pr'
         run: |
+          # shellcheck source=/dev/null
+          source "${WORKFLOWS_PATH}/scripts/lib.sh"
           body="<!-- lsio-mod-build -->
           PR build pushed to \`${IMAGE_PATH}:${PRIMARY_TAG}\`.
 
           > [!WARNING]
           > Unreviewed pull request build in the \`untrusted-pr\` namespace. Not for production use; deleted when the pull request closes."
-          existing=$(gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" --jq '.[] | select(.body | contains("<!-- lsio-mod-build -->")) | .id' | head -1)
+          existing=$(retry gh api --paginate "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" --jq '.[] | select(.body | contains("<!-- lsio-mod-build -->")) | .id' | head -1)
           if [[ -n "${existing}" ]]; then
-            gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${existing}" -f body="${body}" >/dev/null
+            retry gh api --method PATCH "repos/${GITHUB_REPOSITORY}/issues/comments/${existing}" -f body="${body}" >/dev/null
           else
-            gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" -f body="${body}" >/dev/null
+            retry gh api --method POST "repos/${GITHUB_REPOSITORY}/issues/${PR_NUMBER}/comments" -f body="${body}" >/dev/null
           fi
         env:
           GH_TOKEN: ${{ github.token }}

@@ -9,7 +9,9 @@ Configuration is by environment:
   RESULT (success|failure|cancelled|skipped), FAILED_JOB, BUNDLE_PATH, RELEASE_URL, ARTIFACT_URL
 
 A failure to deliver is a warning, never a build failure: the control plane reconciles from
-GitHub on its own schedule.
+GitHub on its own schedule. Network failures and 5xx answers are retried (scripts/netretry.py), three
+attempts over about half a minute so a control plane that is down does not hold every build's runner;
+control de-duplicates a repeated POST by its body, which is built once.
 """
 
 from __future__ import annotations
@@ -17,6 +19,7 @@ from __future__ import annotations
 import datetime as dt
 import hashlib
 import hmac
+import http.client
 import json
 import os
 import sys
@@ -28,6 +31,10 @@ from typing import Any
 sys.path.insert(0, str(Path(__file__).resolve().parents[3] / "scripts"))
 
 import gha  # noqa: E402
+import netretry  # noqa: E402
+
+
+ATTEMPTS = 3
 
 
 def build_event(env: dict[str, str], bundle: dict[str, Any] | None, sent: str | None = None) -> dict[str, Any]:
@@ -93,11 +100,12 @@ def main() -> int:
     body = json.dumps(event, separators=(",", ":"), sort_keys=True).encode("utf-8")
     url = control_url.rstrip("/") + "/events"
     try:
-        status = post(url, body, sign(body, secret))
+        signature = sign(body, secret)
+        status = netretry.retry(lambda: post(url, body, signature), what=f"POST {url}", attempts=ATTEMPTS)
         print(f"POST {url} -> {status}")
     except urllib.error.HTTPError as exc:
         gha.warning(f"control plane returned HTTP {exc.code} for {url}")
-    except (urllib.error.URLError, TimeoutError, OSError) as exc:
+    except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException) as exc:
         gha.warning(f"could not reach the control plane at {url}: {exc}")
     return 0
 

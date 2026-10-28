@@ -25,10 +25,10 @@ from __future__ import annotations
 import argparse
 import base64
 import html
+import http.client
 import json
 import os
 import re
-import subprocess
 import sys
 import tarfile
 import urllib.parse
@@ -36,6 +36,8 @@ import urllib.request
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+import netretry
 
 MARKER = "<!-- lsio-build-report -->"
 BOT = "github-actions[bot]"
@@ -399,8 +401,7 @@ def _fit(body: str) -> str:
 
 
 def gh_api(args: list[str], body: Json | None = None) -> Any:
-    cmd = ["gh", "api", *args]
-    proc = subprocess.run(cmd, input=json.dumps(body) if body is not None else None, capture_output=True, text=True, check=False)
+    proc = netretry.run(["gh", "api", *args], input=json.dumps(body) if body is not None else None)
     if proc.returncode != 0:
         raise RuntimeError(f"gh api {' '.join(args)}: {proc.stderr.strip()[:500]}")
     return json.loads(proc.stdout) if proc.stdout.strip() else None
@@ -502,10 +503,13 @@ def base_release(repo: str, base_ref: str) -> Json | None:
 
 
 def fetch(url: str, cap: int = MAX_TABLE) -> str | None:
-    try:
+    def get() -> str:
         with urllib.request.urlopen(url, timeout=60) as response:
             return response.read(cap + 1)[:cap].decode("utf-8", "replace")
-    except OSError:
+
+    try:
+        return netretry.retry(get, what=f"GET {url}")
+    except (OSError, http.client.HTTPException):
         return None
 
 
@@ -518,17 +522,20 @@ def upload_attachment(token: str, repository_id: int, name: str, data: bytes) ->
         method="POST",
         headers={"Authorization": f"Bearer {token}", "Accept": "application/json", "Content-Type": "image/png"},
     )
-    try:
+    def post() -> str:
         with urllib.request.urlopen(request, timeout=120) as response:
-            url = str(json.load(response).get("url", ""))
-    except (OSError, ValueError) as err:
+            return str(json.load(response).get("url", ""))
+
+    try:
+        url = netretry.retry(post, what="screenshot upload")
+    except (OSError, ValueError, http.client.HTTPException) as err:
         print(f"::warning::screenshot upload failed: {err}")
         return None
     return url if url.startswith(ATTACHMENT_PREFIX) and re.fullmatch(r"[\w:/.-]+", url) else None
 
 
 def image_exists(ref: str) -> bool:
-    proc = subprocess.run(["docker", "buildx", "imagetools", "inspect", ref], capture_output=True, text=True, check=False)
+    proc = netretry.run(["docker", "buildx", "imagetools", "inspect", ref])
     return proc.returncode == 0
 
 

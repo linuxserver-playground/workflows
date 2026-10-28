@@ -31,9 +31,11 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+        # shellcheck source=../../../scripts/lib.sh
+        source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
         dir="${RUNNER_TEMP}/grype-bin"
         mkdir -p "${dir}"
-        curl -sSfL --retry 3 -o "${dir}/grype.tgz" \
+        retry curl -sSfL -o "${dir}/grype.tgz" \
           "https://github.com/anchore/grype/releases/download/v${GRYPE_VERSION}/grype_${GRYPE_VERSION}_linux_amd64.tar.gz"
         echo "${GRYPE_SHA256}  ${dir}/grype.tgz" | sha256sum -c -
         tar -xzf "${dir}/grype.tgz" -C "${dir}" grype
@@ -60,15 +62,20 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
+        # shellcheck source=../../../scripts/lib.sh
+        source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
         dir="${RUNNER_TEMP}/lsio-previous"
         rm -rf "${dir}" && mkdir -p "${dir}"
-        if ! gh release download "${PREVIOUS_TAG}" -R "${REPOSITORY}" -D "${dir}" -p build.json; then
+        # A missing asset ("no assets match the file pattern") is not retried; --clobber lets a retry replace a
+        # partial download.
+        if ! retry gh release download "${PREVIOUS_TAG}" -R "${REPOSITORY}" -D "${dir}" -p build.json --clobber; then
           echo "::warning::previous release ${PREVIOUS_TAG} has no build.json; the record diffs this build as the first"
           exit 0
         fi
         # record.json carries the previous package tables; releases made before records have the syft documents.
-        gh release download "${PREVIOUS_TAG}" -R "${REPOSITORY}" -D "${dir}" -p record.json 2>/dev/null \
-          || gh release download "${PREVIOUS_TAG}" -R "${REPOSITORY}" -D "${dir}" -p 'packages.*.json.gz' || true
+        retry gh release download "${PREVIOUS_TAG}" -R "${REPOSITORY}" -D "${dir}" -p record.json --clobber 2>/dev/null \
+          || retry gh release download "${PREVIOUS_TAG}" -R "${REPOSITORY}" -D "${dir}" -p 'packages.*.json.gz' --clobber \
+          || true
         echo "dir=${dir}" >> "${GITHUB_OUTPUT}"
       env:
         PREVIOUS_TAG: ${{ inputs.previous_tag }}

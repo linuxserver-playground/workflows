@@ -16,10 +16,11 @@ from __future__ import annotations
 import argparse
 import datetime as dt
 import json
-import subprocess
 import sys
 import urllib.parse
 from typing import Any
+
+import netretry
 
 STAGING_PREFIX = "build/"
 
@@ -46,7 +47,7 @@ def staging_packages(packages: list[dict[str, Any]]) -> list[str]:
 
 
 def gh_api(args: list[str]) -> Any:
-    proc = subprocess.run(["gh", "api", *args], capture_output=True, text=True, check=False)
+    proc = netretry.run(["gh", "api", *args])
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip())
     return json.loads(proc.stdout) if proc.stdout.strip() else None

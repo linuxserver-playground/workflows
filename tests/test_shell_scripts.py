@@ -351,20 +351,106 @@ def test_release_accepts_an_existing_tag_at_the_same_commit_only(env, tmp_path):
     assert "release create" not in Path(extra["GH_LOG"]).read_text()
 
 
-def _retry(env: dict, tmp_path: Path, error: str, also: str | None) -> tuple[int, int]:
-    """retry_ghcr over a command that fails once with `error`: (exit code, attempts made)."""
+def _retry(env: dict, tmp_path: Path, error: str, also: str | None = None, helper: str = "retry_ghcr", code: int = 1, fails: int = 1, name: str = "flaky") -> tuple[int, int, str]:
+    """`helper` over a command that fails `fails` times printing `error` and exiting `code`: (exit code, attempts, stderr).
+    The command is a script called `name` on PATH, so curl's exit codes can be tried."""
     count = tmp_path / "attempts"
     count.write_text("")
-    flaky = f'echo x >> {count}; [[ $(wc -l < {count}) -gt 1 ]] || {{ echo "{error}" >&2; exit 1; }}'
+    command = Path(env["PATH"].split(":")[0]) / name
+    command.write_text(f'#!/usr/bin/env bash\necho x >> "{count}"\nif [[ $(wc -l < "{count}") -le {fails} ]]; then printf "%s\\n" "{error}" >&2; exit {code}; fi\n')
+    command.chmod(0o755)
     run_env = {**env, **({"RETRY_ALSO": also} if also else {})}
-    proc = subprocess.run(["bash", "-c", f'source "{ROOT}/scripts/lib.sh"; retry_ghcr bash -c \'{flaky}\''], env=run_env, capture_output=True, text=True)
-    return proc.returncode, len(count.read_text().splitlines())
+    proc = subprocess.run(["bash", "-c", f'set -euo pipefail; source "{ROOT}/scripts/lib.sh"; {helper} {name} arg'], env=run_env, capture_output=True, text=True)
+    return proc.returncode, len(count.read_text().splitlines()), proc.stderr
 
 
 def test_retry_ghcr_retries_rate_limits_and_returns_other_errors_at_once(env, tmp_path):
-    assert _retry(env, tmp_path, "toomanyrequests: slow down", None) == (0, 2)
-    assert _retry(env, tmp_path, "Error response from daemon: manifest unknown", None) == (1, 1)
+    assert _retry(env, tmp_path, "toomanyrequests: slow down")[:2] == (0, 2)
+    assert _retry(env, tmp_path, "Error response from daemon: manifest unknown")[:2] == (1, 1)
+    assert _retry(env, tmp_path, "denied")[:2] == (0, 2)
 
 
 def test_retry_ghcr_retries_the_extra_pattern_it_is_given(env, tmp_path):
-    assert _retry(env, tmp_path, "Error response from daemon: manifest unknown", "manifest unknown") == (0, 2)
+    assert _retry(env, tmp_path, "Error response from daemon: manifest unknown", "manifest unknown")[:2] == (0, 2)
+
+
+def test_retry_ghcr_retries_network_failures_but_not_a_failed_dockerfile_step(env, tmp_path):
+    assert _retry(env, tmp_path, "failed to push ghcr.io/o/x:t: unexpected status from PUT request: 502 Bad Gateway")[:2] == (0, 2)
+    assert _retry(env, tmp_path, "read tcp 10.1.0.4:1->140.82.1.1:443: read: connection reset by peer")[:2] == (0, 2)
+    step = 'curl: (6) Could not resolve host: gone.example\nERROR: failed to solve: process did not complete successfully: exit code: 6'
+    assert _retry(env, tmp_path, step)[:2] == (1, 1)
+    assert _retry(env, tmp_path, "toomanyrequests\n" + step)[:2] == (0, 2)
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        "curl: (56) Failure when receiving data from the peer",
+        "error: RPC failed; curl 56 GnuTLS recv error (-9): Error decoding the received TLS packet.",
+        "HTTP 502: Bad Gateway (https://api.github.com/repos/o/r/releases)",
+        "error: RPC failed; HTTP 503 curl 22 The requested URL returned error: 503",
+        "fatal: unable to access 'https://github.com/o/r/': Could not resolve host: github.com",
+        "Post https://api.github.com/graphql: net/http: TLS handshake timeout",
+        "dial tcp 140.82.112.33:443: i/o timeout",
+        "unexpected EOF",
+        "HTTP 429: Too Many Requests",
+        "HTTP 403: API rate limit exceeded for installation ID 1.",
+    ],
+)
+def test_retry_retries_network_failures(env, tmp_path, error):
+    code, attempts, stderr = _retry(env, tmp_path, error, helper="retry")
+    assert (code, attempts) == (0, 2)
+    assert error.split(":")[0] in stderr and "retry: attempt 1/5" in stderr  # the caller still sees the error
+
+
+@pytest.mark.parametrize(
+    "error",
+    [
+        "HTTP 404: Not Found (https://api.github.com/repos/o/r/git/ref/tags/x)",
+        "release not found",
+        "HTTP 401: Bad credentials",
+        " ! [rejected]        HEAD -> main (fetch first)",
+        "no assets match the file pattern",
+        "denied",
+        "#12 exporting manifest sha256:4290503a1b2c3d4e5f6071829355037abcdef0123456789abcdef0123456789 done",
+        "",
+    ],
+)
+def test_retry_returns_other_failures_at_once(env, tmp_path, error):
+    assert _retry(env, tmp_path, error, helper="retry", code=3)[:2] == (3, 1)
+
+
+def test_retry_reads_curl_exit_codes_only_from_curl(env, tmp_path):
+    assert _retry(env, tmp_path, "", helper="retry", code=7, name="curl")[:2] == (0, 2)
+    assert _retry(env, tmp_path, "", helper="retry", code=56, name="curl")[:2] == (0, 2)
+    assert _retry(env, tmp_path, "", helper="retry", code=22, name="curl")[:2] == (22, 1)
+    assert _retry(env, tmp_path, "", helper="retry", code=7, name="flaky")[:2] == (7, 1)
+
+
+def test_retry_gives_up_after_the_attempts_with_the_exit_code(env, tmp_path):
+    code, attempts, stderr = _retry({**env, "RETRY_MAX_ATTEMPTS": "3"}, tmp_path, "connection reset by peer", helper="retry", code=4, fails=99)
+    assert (code, attempts) == (4, 3)
+    assert "failed after 3 attempts (exit 4)" in stderr
+
+
+def test_retry_also_extends_retry(env, tmp_path):
+    assert _retry(env, tmp_path, " ! [rejected] HEAD -> main (fetch first)", r"\[rejected\]", helper="retry")[:2] == (0, 2)
+
+
+def test_generated_files_push_is_retried_from_a_new_rebase_when_the_branch_moves(env, tmp_path):
+    """A commit lands between our rebase and our push: the push is refused (fetch first) and pull_and_push runs again."""
+    origin, clone = make_remote(tmp_path, {"README.md": "# x\n", "AGENTS.md": "a\n"})
+    other = other_clone(origin, tmp_path, "other")
+    (other / "AGENTS.md").write_text("b\n")
+    git("commit", "--quiet", "-am", "Edit agents", cwd=other)
+    git("push", "--quiet", "origin", "main", cwd=other)
+    # The rebase rewrites our commit, so post-rewrite runs right before the push: the first time it pushes another
+    # commit to the branch from the other clone.
+    marker = tmp_path / "raced"
+    hook = clone / ".git" / "hooks" / "post-rewrite"
+    hook.write_text(f'#!/usr/bin/env bash\n[[ -e "{marker}" ]] && exit 0\ntouch "{marker}"\ncd "{other}" && echo c > LICENSE && git add LICENSE && git commit --quiet -m "Add licence" && git push --quiet origin main\n')
+    hook.chmod(0o755)
+    proc = run(UPDATE_GENERATED, env, "render", "ghcr.io/o/builder:latest", "main", cwd=clone)
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert marker.exists() and "retry: attempt 1/5 of pull_and_push" in proc.stderr
+    assert git("log", "--format=%s", "main", cwd=origin).splitlines() == ["Update generated files [skip ci]", "Add licence", "Edit agents", "Initial"]

@@ -33,7 +33,7 @@ on:
         type: string
         default: ghcr.io/linuxserver-playground/builder:latest
       builder_ref:
-        description: Ref of linuxserver-playground/builder to pip install the contracts package from
+        description: Ref of linuxserver-playground/builder to install the contracts package from (its source tarball)
         type: string
         default: main
     secrets:

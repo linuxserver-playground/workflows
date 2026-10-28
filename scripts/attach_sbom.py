@@ -30,6 +30,8 @@ import urllib.request
 from pathlib import Path
 from typing import Any
 
+import netretry
+
 OCI_INDEX = "application/vnd.oci.image.index.v1+json"
 OCI_MANIFEST = "application/vnd.oci.image.manifest.v1+json"
 DOCKER_LIST = "application/vnd.docker.distribution.manifest.list.v2+json"
@@ -162,12 +164,14 @@ class Registry:
         request = urllib.request.Request(
             f"https://{registry}/token?scope={scope}&service={registry}", headers={"Authorization": f"Basic {basic}"}
         )
-        with urllib.request.urlopen(request, timeout=60) as response:
+        with netretry.retry(lambda: urllib.request.urlopen(request, timeout=60), what="GHCR token") as response:
             self.bearer = json.load(response)["token"]
 
     def _request(self, method: str, url: str, data: bytes | None = None, headers: dict[str, str] | None = None) -> Any:
+        """One registry call, retried on network failures and 5xx/429 (every call here is safe to repeat: blobs and
+        manifests are PUT by digest or tag, and a second upload session only abandons the first)."""
         request = urllib.request.Request(url, data=data, method=method, headers={"Authorization": f"Bearer {self.bearer}", **(headers or {})})
-        return urllib.request.urlopen(request, timeout=300)
+        return netretry.retry(lambda: urllib.request.urlopen(request, timeout=300), what=f"{method} {url}")
 
     def manifest(self, reference: str) -> tuple[Json, str]:
         with self._request("GET", f"{self.base}/manifests/{reference}", headers={"Accept": ACCEPT}) as response:

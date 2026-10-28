@@ -21,7 +21,8 @@ mkdir -p "${work}"
 
 # ---- Does the release already exist (re-run of the same build)? ----
 exists=false
-if gh release view "${TAG}" --repo "${REPOSITORY}" --json url >/dev/null 2>&1; then
+# gh says "release not found" for a missing one, which retry returns at once.
+if retry gh release view "${TAG}" --repo "${REPOSITORY}" --json url >/dev/null 2>&1; then
   exists=true
   notice "release ${TAG} already exists; assets will be re-uploaded with --clobber"
 fi
@@ -33,7 +34,7 @@ if [[ "${HEAD_ALREADY_RELEASED}" == "true" && -n "${PREVIOUS_TAG}" ]]; then
 else
   gen_args=(-f "tag_name=${TAG}" -f "target_commitish=${BRANCH}")
   [[ -n "${PREVIOUS_TAG}" ]] && gen_args+=(-f "previous_tag_name=${PREVIOUS_TAG}")
-  if ! retry 3 10 gh api --method POST "repos/${REPOSITORY}/releases/generate-notes" "${gen_args[@]}" --jq .body > "${work}/linuxserver.md"; then
+  if ! retry gh api --method POST "repos/${REPOSITORY}/releases/generate-notes" "${gen_args[@]}" --jq .body > "${work}/linuxserver.md"; then
     warn "generate-notes failed; the LinuxServer section will be empty"
     echo "" > "${work}/linuxserver.md"
   fi
@@ -83,10 +84,10 @@ for f in "${BUNDLE_DIR}"/packages.*.json.gz "${BUNDLE_DIR}"/layers.*.json "${BUN
          "${BUNDLE_DIR}"/record.json; do
   [[ -f "${f}" ]] && assets+=("${f}")
 done
-retry 3 15 gh release upload "${TAG}" "${assets[@]}" --repo "${REPOSITORY}" --clobber
+retry gh release upload "${TAG}" "${assets[@]}" --repo "${REPOSITORY}" --clobber
 endgroup
 
-release_url=$(gh release view "${TAG}" --repo "${REPOSITORY}" --json url --jq .url)
+release_url=$(retry gh release view "${TAG}" --repo "${REPOSITORY}" --json url --jq .url)
 set_output release_url "${release_url}"
 set_output created "$([[ "${exists}" == "false" ]] && echo true || echo false)"
 summary "### Release

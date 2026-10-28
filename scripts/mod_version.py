@@ -96,7 +96,8 @@ def main(argv: list[str]) -> int:
 
     mod = yaml.safe_load(Path(args.mod_yml).read_text(encoding="utf-8")) or {}
     try:
-        result = plan(mod, args.version.strip(), args.line.strip())
+        with rv.retries():
+            result = plan(mod, args.version.strip(), args.line.strip())
     except KeyError:
         print(f"::error file=mod.yml::no version line named {args.line!r} in upstream.lines")
         return 2

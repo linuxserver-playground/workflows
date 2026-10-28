@@ -36,8 +36,7 @@ runs:
       shell: bash
       run: |
         set -euo pipefail
-        python3 -m pip install --quiet --disable-pip-version-check --user \
-          "git+https://github.com/linuxserver-playground/builder@${BUILDER_REF}"
+        bash "${GITHUB_ACTION_PATH}/../../../scripts/install_builder.sh" "${BUILDER_REF}"
       env:
         BUILDER_REF: ${{ inputs.builder_ref }}
 

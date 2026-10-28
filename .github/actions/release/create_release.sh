@@ -22,12 +22,12 @@ prerelease="${6:-false}"
 [[ "${sha}" =~ ^[0-9a-f]{40}$ ]] || die "sha ${sha} is not a full commit id"
 
 # ---- Tag at the built commit ----
-if existing=$(gh api "repos/${repository}/git/ref/tags/${tag}" --jq '.object.type + " " + .object.sha' 2>/dev/null); then
+if existing=$(retry gh api "repos/${repository}/git/ref/tags/${tag}" --jq '.object.type + " " + .object.sha' 2>/dev/null); then
   obj_type="${existing%% *}"
   obj_sha="${existing#* }"
   if [[ "${obj_type}" == "tag" ]]; then
     # Annotated tag: resolve the tag object to the commit it points at.
-    obj_sha=$(gh api "repos/${repository}/git/tags/${obj_sha}" --jq '.object.sha')
+    obj_sha=$(retry gh api "repos/${repository}/git/tags/${obj_sha}" --jq '.object.sha')
   fi
   [[ "${obj_sha}" == "${sha}" ]] || die "tag ${tag} already exists at ${obj_sha}, not at ${sha}; a release tag never moves"
   notice "tag ${tag} already points at ${sha}"
@@ -39,9 +39,9 @@ else
   work=$(mktemp -d)
   git init --quiet "${work}"
   git -C "${work}" remote add origin "${remote}"
-  retry 3 10 git -C "${work}" fetch --quiet --depth 1 origin "${sha}"
+  retry git -C "${work}" fetch --quiet --depth 1 origin "${sha}"
   git -C "${work}" tag "${tag}" "${sha}"
-  retry 3 10 git -C "${work}" push --quiet origin "refs/tags/${tag}"
+  retry git -C "${work}" push --quiet origin "refs/tags/${tag}"
   rm -rf "${work}"
   echo "created tag ${tag} at ${sha}"
 fi
@@ -49,4 +49,9 @@ fi
 # ---- Release on the branch ----
 create_args=(--repo "${repository}" --target "${branch}" --title "${tag}" --notes-file "${notes_file}")
 [[ "${prerelease}" == "true" ]] && create_args+=(--prerelease)
-retry 3 15 gh release create "${tag}" "${create_args[@]}"
+# A create whose response was lost leaves the release made; the retry is then refused as a duplicate. It is ours: the
+# caller only gets here when the release did not exist.
+if ! retry gh release create "${tag}" "${create_args[@]}"; then
+  retry gh release view "${tag}" --repo "${repository}" --json url >/dev/null 2>&1 || die "could not create the release ${tag}"
+  notice "release ${tag} exists after a failed create; keeping it"
+fi

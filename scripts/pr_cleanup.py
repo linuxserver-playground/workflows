@@ -17,10 +17,11 @@ from __future__ import annotations
 import argparse
 import json
 import re
-import subprocess
 import sys
 import urllib.parse
 from typing import Any
+
+import netretry
 
 
 def tag_matches(tag: str, pr: int) -> bool:
@@ -38,7 +39,7 @@ def select_versions(versions: list[dict[str, Any]], pr: int) -> list[dict[str, A
 
 
 def gh_api(args: list[str]) -> Any:
-    proc = subprocess.run(["gh", "api", *args], capture_output=True, text=True, check=False)
+    proc = netretry.run(["gh", "api", *args])
     if proc.returncode != 0:
         raise RuntimeError(proc.stderr.strip())
     return json.loads(proc.stdout) if proc.stdout.strip() else None

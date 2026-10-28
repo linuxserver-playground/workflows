@@ -100,7 +100,7 @@ if [[ "${PUSH}" == "true" ]]; then
   RETRY_ALSO="manifest unknown" retry_ghcr docker pull --platform "${platform}" "${remote_ref}"
   image_ref="${remote_ref}"
 else
-  docker buildx build --no-cache --pull --platform "${platform}" -f "${built_dockerfile}" \
+  retry_ghcr docker buildx build --no-cache --pull --platform "${platform}" -f "${built_dockerfile}" \
     "${args[@]}" --load -t "${local_ref}" --metadata-file "${meta}" .
   image_ref="${local_ref}"
 fi

@@ -21,12 +21,15 @@ from __future__ import annotations
 
 import argparse
 import hashlib
+import http.client
 import json
 import sys
 import urllib.error
 import urllib.request
 from pathlib import Path
 from typing import Any
+
+import netretry
 
 
 def normalise(text: str) -> str:
@@ -52,11 +55,16 @@ def compare(fresh: str, committed: str | None) -> dict[str, Any]:
 
 
 def fetch(url: str, timeout: int = 30) -> str | None:
-    req = urllib.request.Request(url, headers={"User-Agent": "linuxserver-playground-workflows/1"})
-    try:
+    """The text at url, retried on network failures; None when it is missing or cannot be read."""
+
+    def get() -> str:
+        req = urllib.request.Request(url, headers={"User-Agent": "linuxserver-playground-workflows/1"})
         with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
             return resp.read().decode("utf-8", errors="replace")
-    except (urllib.error.URLError, TimeoutError, OSError):
+
+    try:
+        return netretry.retry(get, what=f"GET {url}")
+    except (urllib.error.URLError, TimeoutError, OSError, http.client.HTTPException):
         return None
 
 

@@ -13,7 +13,7 @@ Prints JSON: {"ls_build": N, "previous_tag": "...", "previous_ls_build": M,
 "previous_release_url": "...", "head_already_released": bool, "diff_base": "..."}. `diff_base` is the newest
 release of the branch not made from this commit: what the build's record.json diffs against.
 
-Releases are read with ``gh api --paginate``; ``pick`` is pure and unit-tested with fixtures.
+Releases are read with ``gh api --paginate`` (retried on network failures, scripts/netretry.py); ``pick`` is pure and unit-tested with fixtures.
 
 On the branch that publishes ``latest`` (unprefixed tags), the other live branches' tags keep their releases out:
 those named in ``--other-tags`` (the manifest's ``release.tags``) and those of every other branch whose own image.yml
@@ -31,14 +31,11 @@ import sys
 import urllib.parse
 from typing import Any
 
+import netretry
+
 
 def list_releases(repo: str) -> list[dict[str, Any]]:
-    proc = subprocess.run(
-        ["gh", "api", "--paginate", "--slurp", f"repos/{repo}/releases?per_page=100"],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
+    proc = netretry.run(["gh", "api", "--paginate", "--slurp", f"repos/{repo}/releases?per_page=100"])
     if proc.returncode != 0:
         raise RuntimeError(f"gh api releases failed: {proc.stderr.strip()}")
     pages = json.loads(proc.stdout or "[]")
@@ -49,7 +46,7 @@ def list_releases(repo: str) -> list[dict[str, Any]]:
 
 
 def gh(path: str, *args: str) -> str | None:
-    proc = subprocess.run(["gh", "api", *args, path], capture_output=True, text=True, check=False)
+    proc = netretry.run(["gh", "api", *args, path])
     return proc.stdout if proc.returncode == 0 else None
 
 

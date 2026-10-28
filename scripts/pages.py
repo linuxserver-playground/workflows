@@ -23,16 +23,15 @@ from __future__ import annotations
 
 import argparse
 import concurrent.futures
+import http.client
 import io
 import json
 import os
 import posixpath
 import re
 import shutil
-import subprocess
 import sys
 import tarfile
-import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
@@ -41,6 +40,7 @@ from pathlib import Path
 from typing import Any
 
 import gha
+import netretry
 
 Json = dict[str, Any]
 Fetch = Callable[[str], "bytes | None"]
@@ -65,7 +65,6 @@ RETIRED = "index.html"
 """The harness's old HTML report, still in older tarballs: never unpacked, as the hub never unpacks it."""
 TAG = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 SHA = re.compile(r"[0-9a-f]{40}")
-ATTEMPTS = 4
 
 BRANCHES_QUERY = """
 query($owner: String!, $name: String!, $after: String) {
@@ -80,21 +79,12 @@ query($owner: String!, $name: String!, $after: String) {
 """
 
 
-def _pause(attempt: int) -> None:
-    time.sleep(min(60, 5 * 2**attempt))
-
-
 def gh_json(args: list[str]) -> Any:
-    """`gh api <args>` as JSON, retried: the release path must not lose its site to one flaky call."""
-    for attempt in range(ATTEMPTS):
-        proc = subprocess.run(["gh", "api", *args], capture_output=True, text=True, check=False)
-        if proc.returncode == 0:
-            return json.loads(proc.stdout or "null")
-        if attempt + 1 == ATTEMPTS:
-            raise RuntimeError(f"gh api {args[0]} failed: {proc.stderr.strip()[:500]}")
-        print(f"retry: gh api {args[0]} failed (attempt {attempt + 1}/{ATTEMPTS})", file=sys.stderr)
-        _pause(attempt)
-    raise AssertionError("unreachable")
+    """`gh api <args>` as JSON, retried on network failures: the release path must not lose its site to one flaky call."""
+    proc = netretry.run(["gh", "api", *args])
+    if proc.returncode != 0:
+        raise RuntimeError(f"gh api {args[0]} failed: {proc.stderr.strip()[:500]}")
+    return json.loads(proc.stdout or "null")
 
 
 def read_branches(repo: str) -> tuple[str, dict[str, str | None]]:
@@ -223,25 +213,25 @@ def unpack(data: bytes, report: Json | None) -> dict[str, bytes]:
 
 
 def make_fetch(token: str) -> Fetch:
-    """Download a release asset; None when it is gone (404) or still failing after the retries."""
+    """Download a release asset, retried on network failures; None when it is gone (404) or fails otherwise."""
+
+    def download(url: str) -> bytes:
+        request = urllib.request.Request(url, headers={"User-Agent": "lsio-pages"})
+        if token:
+            # Not sent on to the storage host the download redirects to.
+            request.add_unredirected_header("Authorization", f"Bearer {token}")
+        with urllib.request.urlopen(request, timeout=120) as response:  # noqa: S310 - release asset URLs
+            return bytes(response.read())
 
     def fetch(url: str) -> bytes | None:
-        for attempt in range(ATTEMPTS):
-            request = urllib.request.Request(url, headers={"User-Agent": "lsio-pages"})
-            if token:
-                # Not sent on to the storage host the download redirects to.
-                request.add_unredirected_header("Authorization", f"Bearer {token}")
-            try:
-                with urllib.request.urlopen(request, timeout=120) as response:  # noqa: S310 - release asset URLs
-                    return bytes(response.read())
-            except urllib.error.HTTPError as err:
-                if err.code == 404:
-                    return None
-                error: Exception = err
-            except (OSError, TimeoutError) as err:
-                error = err
-            if attempt + 1 < ATTEMPTS:
-                _pause(attempt)
+        try:
+            return netretry.retry(lambda: download(url), what=f"GET {url}")
+        except urllib.error.HTTPError as err:
+            if err.code == 404:
+                return None
+            error: Exception = err
+        except (OSError, TimeoutError, http.client.HTTPException) as err:
+            error = err
         gha.warning(f"could not download {url}: {error}")
         return None
 

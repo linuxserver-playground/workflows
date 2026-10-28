@@ -63,13 +63,17 @@ jobs:
         if: steps.pr.outputs.action == 'report'
         run: |
           set -euo pipefail
+          # shellcheck source=/dev/null
+          source "${WORKFLOWS_PATH}/scripts/lib.sh"
+          # Each attempt starts from an empty directory, so a retry never trips over a partial download. A missing
+          # artifact is not retried.
+          artifact() { rm -rf "$2" && mkdir -p "$2" && gh run download "${RUN_ID}" --repo "${GITHUB_REPOSITORY}" --name "$1" --dir "$2"; }
           mkdir -p bundle images
-          gh run download "${RUN_ID}" --repo "${GITHUB_REPOSITORY}" --name bundle --dir bundle \
+          retry artifact bundle bundle \
             || echo "::warning::run ${RUN_ID} left no bundle artifact; the report says what it can"
           if [[ "${PUBLISH}" == "true" ]]; then
             for arch in amd64 arm64; do
-              gh run download "${RUN_ID}" --repo "${GITHUB_REPOSITORY}" --name "image-${arch}" --dir "images/${arch}" \
-                || echo "no image-${arch} artifact"
+              retry artifact "image-${arch}" "images/${arch}" || echo "no image-${arch} artifact"
             done
           fi
           ls -la bundle images
@@ -93,7 +97,9 @@ jobs:
       - name: Ensure the approval label exists
         if: steps.pr.outputs.fork == 'true'
         run: |
-          gh label create "${APPROVAL_LABEL}" --repo "${GITHUB_REPOSITORY}" --color 0E8A16 \
+          # shellcheck source=/dev/null
+          source "${WORKFLOWS_PATH}/scripts/lib.sh"
+          retry gh label create "${APPROVAL_LABEL}" --repo "${GITHUB_REPOSITORY}" --color 0E8A16 \
             --description "A maintainer reviewed this fork pull request; its build image may be published to untrusted-pr" \
             2>/dev/null || true
         env:
@@ -138,11 +144,26 @@ jobs:
       contains(github.event.pull_request.labels.*.name, 'safe-to-publish')
     runs-on: ubuntu-24.04
     permissions:
+      contents: read
       issues: write
       pull-requests: write
     steps:
+      - name: Check out shared workflows
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.WORKFLOWS_REPOSITORY }}
+          ref: ${{ inputs.workflows_ref }}
+          path: ${{ env.WORKFLOWS_PATH }}
+          persist-credentials: false
+          sparse-checkout: scripts/lib.sh
+          sparse-checkout-cone-mode: false
+
       - name: Remove the label
-        run: gh api --method DELETE "repos/${GITHUB_REPOSITORY}/issues/${PR}/labels/${APPROVAL_LABEL}"
+        run: |
+          set -euo pipefail
+          # shellcheck source=/dev/null
+          source "${WORKFLOWS_PATH}/scripts/lib.sh"
+          retry gh api --method DELETE "repos/${GITHUB_REPOSITORY}/issues/${PR}/labels/${APPROVAL_LABEL}"
         env:
           GH_TOKEN: ${{ github.token }}
           PR: ${{ github.event.pull_request.number }}

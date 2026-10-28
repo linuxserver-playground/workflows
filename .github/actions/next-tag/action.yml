@@ -34,7 +34,7 @@ runs:
         set -euo pipefail
         # shellcheck source=../../../scripts/lib.sh
         source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
-        git fetch --tags --quiet origin || warn "could not fetch tags; HEAD tag detection may be incomplete"
+        retry git fetch --tags --quiet origin || warn "could not fetch tags; HEAD tag detection may be incomplete"
         result=$(python3 "${GITHUB_ACTION_PATH}/../../../scripts/next_tag.py" \
           --repo "${REPOSITORY}" --branch "${BRANCH}" --release-tag "${RELEASE_TAG}" --other-tags "${OTHER_TAGS}")
         echo "${result}"

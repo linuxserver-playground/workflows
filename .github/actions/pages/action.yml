@@ -10,7 +10,7 @@ inputs:
     description: Releases kept per live branch
     default: "5"
   builder_ref:
-    description: Ref of linuxserver-playground/builder to pip install, for the shape of each build's vulns.json
+    description: Ref of linuxserver-playground/builder to install, for the shape of each build's vulns.json
     default: main
 
 outputs:
@@ -29,9 +29,7 @@ runs:
         # builder shapes vulns.json (CONVENTIONS §6) and brings PyYAML; the publish job installed it for emit-bundle
         # already, the reason=pages job installs it here. Without it the site is not assembled, so the last deploy
         # stays rather than one without the scans.
-        python3 -c 'from builder.derive.vulns import document' 2>/dev/null \
-          || python3 -m pip install --quiet --disable-pip-version-check --user \
-            "git+https://github.com/linuxserver-playground/builder@${BUILDER_REF}"
+        bash "${GITHUB_ACTION_PATH}/../../../scripts/install_builder.sh" "${BUILDER_REF}" builder.derive.vulns
         python3 "${GITHUB_ACTION_PATH}/../../../scripts/pages.py" assemble \
           --repo "${REPOSITORY}" --keep "${KEEP}" --out "${RUNNER_TEMP}/lsio-pages"
       env:

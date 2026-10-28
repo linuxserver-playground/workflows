@@ -146,7 +146,9 @@ def main(argv: list[str]) -> int:
         return 2
     manifest = rv.load_manifest(Path(argv[0]))
     try:
-        print(json.dumps(fetch_notes(manifest, argv[1])))
+        with rv.retries():
+            notes = fetch_notes(manifest, argv[1])
+        print(json.dumps(notes))
     except rv.ResolveError as exc:
         print(f"error: {exc}", file=sys.stderr)
         return 1

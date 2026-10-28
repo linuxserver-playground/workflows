@@ -95,12 +95,21 @@ echo "${changed}"
 git config user.name "github-actions[bot]"
 git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
+# Rebase onto the branch and push, as one unit: a push refused because the branch moved meanwhile is tried again
+# from a new rebase (RETRY_ALSO), and network failures of either half are retried. Anything else, a rebase conflict
+# or a refused workflow-file push, returns at once.
+pull_and_push() {
+  local rc=0
+  git pull --rebase --quiet origin "${branch}" && git push --quiet origin "HEAD:${branch}" || rc=$?
+  (( rc == 0 )) || git rebase --abort 2>/dev/null || true
+  return "${rc}"
+}
+
 commit_and_push() {
   # $@ = files to include
   git add -- "$@"
   git commit --quiet -m "${COMMIT_SUBJECT}"
-  retry 3 10 git pull --rebase --quiet origin "${branch}"
-  retry 3 10 git push --quiet origin "HEAD:${branch}"
+  RETRY_ALSO='\[rejected\]|non-fast-forward|fetch first' retry pull_and_push
 }
 
 # shellcheck disable=SC2086

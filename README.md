@@ -21,7 +21,7 @@ are the control plane's job.
 | `.github/workflows/cleanup-staging.yml` | Weekly deletion of `build/*` staging images older than 7 days (runs in this repo). |
 | `.github/workflows/ci.yml` | Checks of this repository. |
 | `.github/actions/<name>/` | Composite actions; the logic lives in the script beside each `action.yml`. |
-| `scripts/` | Shared code: `lib.sh` (bash helpers, `retry_ghcr`), `resolve_version.py`, `mod_version.py`, `next_tag.py`, `tags.py`, `package_versions.py`, `upstream_notes.py`, `attach_sbom.py`, `pr_report.py`, `pages.py`, `publish_pr_image.sh`, `pr_cleanup.py`, `cleanup_staging.py`, the prepare-job scripts, `check.sh`. |
+| `scripts/` | Shared code: `lib.sh` (bash helpers, `retry`, `retry_ghcr`), `netretry.py` (their Python twin), `install_builder.sh`, `resolve_version.py`, `mod_version.py`, `next_tag.py`, `tags.py`, `package_versions.py`, `upstream_notes.py`, `attach_sbom.py`, `pr_report.py`, `pages.py`, `publish_pr_image.sh`, `pr_cleanup.py`, `cleanup_staging.py`, the prepare-job scripts, `check.sh`. |
 | `templates/build.yml`, `templates/pr-report.yml` | The caller files the builder renders into image repos. |
 | `fixtures/example-image/` | A minimal valid image repository for integration runs. |
 | `tests/` | pytest over every Python script plus static checks of the YAML. |
@@ -145,8 +145,8 @@ Every image repository's GitHub Pages site holds the heavy files of its newest l
 `test.<arch>.tar.gz` and `vulns.json`, for the newest 5 releases of each live branch. `vulns.json` is the scan the
 build made of itself (`record.json` `vulns`), the image as it was released, shaped by `builder.derive.vulns.document`,
 the one shaping of it; a release whose record has no scan gets none. Nothing rescans it. Nothing is committed: the
-`pages` action installs the builder package (`builder_ref`, unless the job has it already, as the Publish job does
-from `emit-bundle`) and assembles the site from the repository's Releases into an empty directory (`scripts/pages.py`:
+`pages` action installs the builder package (`builder_ref` with `scripts/install_builder.sh`, unless the job has it
+already, as the Publish job does from `emit-bundle`) and assembles the site from the repository's Releases into an empty directory (`scripts/pages.py`:
 one GraphQL query for the branches and their `image.yml`, the release list, then the assets from their download
 URLs, which cost no REST quota), uploads it with `actions/upload-pages-artifact` and deploys it with
 `actions/deploy-pages`. A deploy refused because another is in progress (two branches of one repository
@@ -273,7 +273,11 @@ resolve(load_manifest("image.yml"), manifest_dir=".")
 # {'upstream': 'v4.0.20.3014', 'upstream_clean': 'v4.0.20.3014', 'semver': '4.0.20', 'source': 'json', 'source_url': '...'}
 ```
 
-Exit codes of the CLI: 0 resolved, 1 error, 3 assets not ready (try later).
+Exit codes of the CLI: 0 resolved, 1 error, 3 assets not ready (try later). The CLI (and `mod_version.py` and
+`upstream_notes.py`, which the builds run) retries network failures and 429/5xx answers inside `with retries():`;
+an importer such as the control plane's scheduler or the hub gets no retries unless it asks for them, since minutes
+of backoff on one dead upstream would hold up every check queued behind it. The retry is inlined, not imported
+from `netretry.py`, because the file is used on its own.
 
 ## Mods
 
@@ -297,6 +301,42 @@ resolves that line unless `mod_version` is given and works out its floating tags
 bare `<target>-<name>` or `-<sha7>`, and stages its per-arch images under its version tag, so it can never move
 what the default line published. The branch's `build.yml` passes its `line` dispatch input through; only a mod
 with lines has it (`builder render-mod`).
+
+## Network retries
+
+One flaky transfer must not fail a build, and one broken request must not be repeated. Every network call the
+workflows and actions make goes through a helper that retries only failures that may pass and returns every other
+failure at once:
+
+- `retry <command...>` (`scripts/lib.sh`) for `gh`, `git`, `curl` and `pip`: 5 attempts with waits of about
+  10, 20, 40 and 80 s (each between half and one and a half times that, capped at 120 s).
+- `retry_ghcr <command...>` for registry commands (`docker push`, `pull`, `buildx build`, `imagetools`): the same
+  classes plus GHCR's `403 Forbidden` and `denied`, 7 attempts capped at 90 s. `RETRY_ALSO` adds one more pattern
+  to either (`manifest unknown` right after a push; a push refused because the branch moved, in
+  `update_generated.sh`, which then rebases again).
+- `scripts/netretry.py` for the Python scripts: `retry(fn)` classifies urllib exceptions and HTTP status codes,
+  `run(cmd)` a command's stderr. `resolve_version.py` carries its own copy (above).
+
+Retried: connection reset, refused, closed or aborted; "Failure when receiving data" and "Failed sending data";
+DNS failures ("Could not resolve host", "Temporary failure in name resolution", "Name or service not known",
+"no such host"); timeouts ("timed out", "i/o timeout", "TLS handshake timeout", "deadline exceeded"); TLS errors,
+"unexpected EOF", "early EOF", "the remote end hung up"; HTTP 500, 502, 503 and 504 and HTTP 429 or a rate limit,
+matched by their HTTP wording (`HTTP 502`, `status: 503`, `returned error: 504`, `Bad Gateway`...) and never as
+bare numbers, which also occur in digests; and, for curl only, exit codes 5, 6, 7, 16, 18, 28, 35, 52, 55, 56
+and 92. Not retried: 4xx answers (a 404 or "release not found" still means not found), refused pushes, and a
+Dockerfile step that failed (`did not complete successfully`) whatever its output says, unless it was throttled.
+`RETRY_MAX_ATTEMPTS`, `RETRY_BASE_DELAY` and `RETRY_MAX_DELAY` override the attempts and delays (the tests set
+the delay to 0). Two calls are kept short on purpose: `notify-control` tries three times (control
+de-duplicates a repeated body; a build never waits long for a control plane that is down), and `package-check`
+keeps its own rebase-and-push loop.
+
+The builder package (`contracts`, `builder`) is installed by `scripts/install_builder.sh <ref>` in `manifest`,
+`emit-bundle` and `pages`: nothing when it already imports, else the source tarball of the ref from
+`codeload.github.com` (one retried HTTPS GET) and `pip install` of that file (retried). It replaced
+`pip install git+https://...`, whose clone neither git nor pip retries. The third-party actions are not wrapped:
+checkout and the artifact actions retry their own transfers, a cache that cannot be restored only warns, and
+setup-buildx, login, attest-build-provenance, upload-pages-artifact and deploy-pages run as they are (a refused
+Pages deploy has the `pages` action's own retries, above).
 
 ## Known limits
 
