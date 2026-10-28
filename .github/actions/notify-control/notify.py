@@ -35,6 +35,7 @@ import netretry  # noqa: E402
 
 
 ATTEMPTS = 3
+PAGES_OUTCOMES = {"deployed", "failed", "skipped"}
 
 
 def build_event(env: dict[str, str], bundle: dict[str, Any] | None, sent: str | None = None) -> dict[str, Any]:
@@ -61,6 +62,10 @@ def build_event(env: dict[str, str], bundle: dict[str, Any] | None, sent: str | 
             event["release_url"] = env["RELEASE_URL"]
         if env.get("ARTIFACT_URL"):
             event["artifact_url"] = env["ARTIFACT_URL"]
+        # The run's Pages deploy, which comes before this event (CONVENTIONS §10). Its step never fails the run, so
+        # this is the only place a failed deploy shows: control re-dispatches `reason: pages` for one that failed.
+        pages = env.get("PAGES") or "skipped"
+        event["pages"] = pages if pages in PAGES_OUTCOMES else "failed"
     return event
 
 

@@ -490,6 +490,7 @@ jobs:
           workflows_ref: ${{ inputs.workflows_ref }}
           ci_image: ${{ inputs.ci_image }}
           index_digest: ${{ steps.manifest.outputs.index_digest }}
+          published: ${{ steps.manifest.outputs.published }}
           control_url: ${{ secrets.CONTROL_URL }}
           site_url: ${{ vars.SITE_URL }}
           builder_ref: ${{ inputs.builder_ref }}
@@ -584,6 +585,20 @@ jobs:
             !out/image.*.tar.gz
           retention-days: ${{ env.MODE == 'live' && 90 || 30 }}
 
+      - name: Pages (live)
+        # The repository's Pages site, assembled from its Releases, so it includes the release just made
+        # (CONVENTIONS §6, "Repo Pages"). Before the event to the control plane, which sends the hub its
+        # image-released and holds its announcement until the build's page is live: that page reads the build's
+        # screenshot, report files, file trees and vulns.json from here, so they are served by then, or the event says
+        # the deploy failed (`pages`). It never fails the release; a lost deploy is repaired by the next one, or by
+        # control re-dispatching reason=pages.
+        id: pages
+        if: ${{ !cancelled() && steps.release.outcome == 'success' }}
+        continue-on-error: true
+        uses: ./.lsio-workflows/.github/actions/pages
+        with:
+          builder_ref: ${{ inputs.builder_ref }}
+
       - name: Notify control plane
         if: always()
         uses: ./.lsio-workflows/.github/actions/notify-control
@@ -600,17 +615,9 @@ jobs:
           reason: ${{ env.MODE == 'pr' && 'pull_request' || inputs.reason }}
           release_url: ${{ steps.release.outputs.release_url }}
           artifact_url: ${{ steps.artifact.outputs.artifact-url }}
-
-      - name: Pages (live)
-        # The repository's Pages site, assembled from its Releases, so it includes the release just made
-        # (CONVENTIONS §6, "Repo Pages"). After the event to the control plane: the hub ingests meanwhile. It never
-        # fails the release; a lost deploy is repaired by the next one.
-        id: pages
-        if: ${{ !cancelled() && steps.release.outcome == 'success' }}
-        continue-on-error: true
-        uses: ./.lsio-workflows/.github/actions/pages
-        with:
-          builder_ref: ${{ inputs.builder_ref }}
+          # deployed | failed | skipped (build.summary `pages`): the Pages step above ends in failure when no deploy
+          # went out, but is continue-on-error, so its outcome is read here.
+          pages: ${{ steps.pages.outcome == 'skipped' && 'skipped' || (steps.pages.outputs.page_url != '' && 'deployed' || 'failed') }}
 
       - name: Job summary
         # The run's one summary box, which notifications link (#summary-<job id>): the result, then the report a

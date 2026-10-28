@@ -117,7 +117,30 @@ def _int(value: Any, default: int = 0) -> int:
         return default
 
 
-def build_bundle(prepare: dict[str, Any], out: Path, *, repository: str, run_id: int, run_url: str, workflows_ref: str, ci_image: str, reason: str, index_digest: str = "", control_url: str = "", site_url: str = "", created: str | None = None) -> dict[str, Any]:
+def published_block(raw: str) -> dict[str, Any] | None:
+    """
+    build.json `published` from publish-manifest's `published` output (a JSON array of `<image>:<tag>` references, in
+    the order it created them): `{"image", "tags"}`. None when nothing was pushed or the output does not parse.
+    """
+    try:
+        refs = json.loads(raw) if raw.strip() else []
+    except ValueError:
+        return None
+    if not isinstance(refs, list):
+        return None
+    image, tags = "", []
+    for ref in refs:
+        if not isinstance(ref, str) or ":" not in ref.rsplit("/", 1)[-1]:
+            return None
+        name, tag = ref.rsplit(":", 1)
+        if image and name != image:
+            return None
+        image = name
+        tags.append(tag)
+    return {"image": image, "tags": tags} if image and tags else None
+
+
+def build_bundle(prepare: dict[str, Any], out: Path, *, repository: str, run_id: int, run_url: str, workflows_ref: str, ci_image: str, reason: str, index_digest: str = "", control_url: str = "", site_url: str = "", created: str | None = None, published: str = "") -> dict[str, Any]:
     mode = prepare["mode"]
     platforms = json.loads(prepare["platforms"]) if isinstance(prepare.get("platforms"), str) else list(prepare.get("platforms") or [])
     arch_info = {a: _load_json(out / f"arch.{a}.json") or {} for a in platforms}
@@ -209,6 +232,8 @@ def build_bundle(prepare: dict[str, Any], out: Path, *, repository: str, run_id:
         bundle["pull_request"] = _int(prepare["pr_number"])
     if prepare.get("previous_tag"):
         bundle["previous"] = _prune({"tag": prepare["previous_tag"], "release_url": prepare.get("previous_release_url")})
+    if (pushed := published_block(published)) is not None:
+        bundle["published"] = pushed
     if index_digest and SHA256_RE.match(index_digest):
         bundle["index_digest"] = index_digest
     graph = _init_graph(_load_json(out / f"init-graph.{primary_arch}.json"))
@@ -261,6 +286,7 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--ci-image", default="")
     ap.add_argument("--reason", default="push")
     ap.add_argument("--index-digest", default="")
+    ap.add_argument("--published", default="", help="publish-manifest's `published` output (JSON array of references)")
     ap.add_argument("--control-url", default="")
     ap.add_argument("--site-url", default="")
     ap.add_argument("--output", default="", help="where to write build.json (default: <out>/build.json)")
@@ -271,7 +297,7 @@ def main(argv: list[str]) -> int:
     if prepare.get("mode") == "live" and not args.site_url:
         print("::error::SITE_URL is not set; a live build links its CI results page on the website", file=sys.stderr)
         return 1
-    bundle = build_bundle(prepare, out, repository=args.repository, run_id=args.run_id, run_url=args.run_url, workflows_ref=args.workflows_ref, ci_image=args.ci_image, reason=args.reason, index_digest=args.index_digest, control_url=args.control_url, site_url=args.site_url)
+    bundle = build_bundle(prepare, out, repository=args.repository, run_id=args.run_id, run_url=args.run_url, workflows_ref=args.workflows_ref, ci_image=args.ci_image, reason=args.reason, index_digest=args.index_digest, control_url=args.control_url, site_url=args.site_url, published=args.published)
     target = Path(args.output) if args.output else out / "build.json"
     target.write_text(json.dumps(bundle, indent=2, sort_keys=False) + "\n", encoding="utf-8")
     problems = validate(bundle)

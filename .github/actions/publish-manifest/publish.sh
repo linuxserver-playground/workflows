@@ -92,10 +92,12 @@ if [[ -n "${SBOM_DIR}" ]]; then
   notice "SBOM attestations on ${IMAGE_PATH}:${PRIMARY_TAG}: ${sbom_platforms:-none}"
 fi
 
+# Every reference created above: the unprefixed tags (the index), then each platform's twins, in the order of
+# build.json `version.tags`. emit-bundle records them as build.json `published` (CONVENTIONS §6).
 published=()
-for t in "${tags[@]}"; do
-  published+=("${IMAGE_PATH}:${t}")
-  for arch in "${platforms[@]}"; do published+=("${IMAGE_PATH}:$(arch_prefix "${arch}")-${t}"); done
+for t in "${tags[@]}"; do published+=("${IMAGE_PATH}:${t}"); done
+for arch in "${platforms[@]}"; do
+  for t in "${tags[@]}"; do published+=("${IMAGE_PATH}:$(arch_prefix "${arch}")-${t}"); done
 done
 set_output index_digest "${index_digest}"
 set_output published "$(printf '%s\n' "${published[@]}" | jq -R . | jq -sc .)"

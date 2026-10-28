@@ -30,6 +30,9 @@ inputs:
     default: ""
   artifact_url:
     default: ""
+  pages:
+    description: The run's Pages deploy, made before this event (deployed | failed | skipped); build.summary `pages`
+    default: skipped
 
 runs:
   using: composite
@@ -54,3 +57,4 @@ runs:
         REASON: ${{ inputs.reason }}
         RELEASE_URL: ${{ inputs.release_url }}
         ARTIFACT_URL: ${{ inputs.artifact_url }}
+        PAGES: ${{ inputs.pages }}

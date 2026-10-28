@@ -242,7 +242,12 @@ def test_pages_deploys_after_a_live_release_and_alone_for_reason_pages():
     assert "needs.prepare.outputs.mode == 'live'" in env and "package_check != 'true'" in env and env.endswith("&& 'github-pages' || '' }}")
     steps = _steps(wf, "publish")
     names = [s.get("name") for s in publish["steps"]]
-    assert names.index("Release (live)") < names.index("Notify control plane") < names.index("Pages (live)") < names.index("Job summary")
+    # Pages before the event to control (CONVENTIONS §10): when the hub lists the build its page's files are served,
+    # and the event says how the deploy went.
+    assert names.index("Release (live)") < names.index("Pages (live)") < names.index("Notify control plane") < names.index("Job summary")
+    notify = publish["steps"][names.index("Notify control plane")]["with"]
+    assert notify["pages"] == "${{ steps.pages.outcome == 'skipped' && 'skipped' || (steps.pages.outputs.page_url != '' && 'deployed' || 'failed') }}"
+    assert steps["bundle"]["with"]["published"] == "${{ steps.manifest.outputs.published }}"
     assert steps["pages"]["if"] == "${{ !cancelled() && steps.release.outcome == 'success' }}"
     assert steps["pages"]["continue-on-error"] is True
     assert steps["pages"]["uses"] == "./.lsio-workflows/.github/actions/pages"

@@ -16,6 +16,9 @@ inputs:
     default: ghcr.io/linuxserver-playground/ci:latest
   index_digest:
     default: ""
+  published:
+    description: publish-manifest's `published` (JSON array of image references), recorded as build.json `published`; empty when nothing was pushed
+    default: ""
   control_url:
     default: ""
   site_url:
@@ -56,6 +59,7 @@ runs:
           --ci-image "${CI_IMAGE}" \
           --reason "${REASON}" \
           --index-digest "${INDEX_DIGEST}" \
+          --published "${PUBLISHED}" \
           --control-url "${CONTROL_URL}" \
           --site-url "${SITE_URL}"
         python3 -m contracts bundle "${OUT_DIR}/build.json"
@@ -66,5 +70,6 @@ runs:
         WORKFLOWS_REF: ${{ inputs.workflows_ref }}
         CI_IMAGE: ${{ inputs.ci_image }}
         INDEX_DIGEST: ${{ inputs.index_digest }}
+        PUBLISHED: ${{ inputs.published }}
         CONTROL_URL: ${{ inputs.control_url }}
         SITE_URL: ${{ inputs.site_url }}

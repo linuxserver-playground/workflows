@@ -32,7 +32,7 @@ are the control plane's job.
 flowchart LR
   P[prepare<br/>manifest · resolve-version · next-tag<br/>render or check · shellcheck · s6 bits<br/>tag set · staging refs] --> A1[arch amd64<br/>free-disk · build-arch → build/ staging · test-arch]
   P --> A2[arch arm64<br/>free-disk · build-arch → build/ staging · test-arch]
-  A1 --> U[publish<br/>publish-manifest from staging · emit-bundle · record<br/>release or package-check · notify-control · pages]
+  A1 --> U[publish<br/>publish-manifest from staging · emit-bundle · record<br/>release or package-check · pages · notify-control]
   A2 --> U
   G[pages<br/>reason=pages only: deploy the Pages site]
   U -. workflow_run .-> R[pr-report.yml, trusted<br/>report comment · fork image after approval<br/>delete untrusted-pr/… pr-N-* on close]
@@ -62,13 +62,15 @@ registry, so a run that fails anywhere leaves every released tag untouched). Bef
 packages-only `sbom.<arch>.spdx.json` from the ci run is added to the staging reference's attestation manifest
 next to the provenance (`scripts/attach_sbom.py`, in BuildKit's in-toto layout), so every released tag carries
 it and `docker buildx imagetools inspect --format '{{json .SBOM}}'` shows it. It then writes and validates
-`build.json` (`emit-bundle`), derives `record.json` from the bundle files (`record`: `builder record` with the
+`build.json` (`emit-bundle`, with `published`: the image and every tag publish-manifest created, which readers take
+a build's tags from instead of listing the registry), derives `record.json` from the bundle files (`record`: `builder record` with the
 package tables, the diff against the previous release, a grype scan of both architectures and the base image's
 layers; about a minute, never fatal; CONVENTIONS §6), attests the index (live), creates the git tag at the built commit and the
 GitHub Release on the branch (`target_commitish` is the branch name, CONVENTIONS §3) with the three-section
-notes and every bundle asset (`release`, live only), posts or updates the single PR comment (pr), POSTs the
-signed `build.summary` event to the control plane (`notify-control`, always; silent when `CONTROL_URL` is
-empty), deploys the repository's Pages site after a live release (`pages`, below; never fatal), writes the job summary, and finally fails if any job failed. The job summary is the run page's only
+notes and every bundle asset (`release`, live only), posts or updates the single PR comment (pr), deploys the
+repository's Pages site after a live release (`pages`, below; never fatal), POSTs the signed `build.summary`
+event to the control plane (`notify-control`, always; silent when `CONTROL_URL` is empty; `pages` in it is
+`deployed`, `failed` or `skipped`), writes the job summary, and finally fails if any job failed. The job summary is the run page's only
 summary box (control's notifications link it as `#summary-<job id>`): the result, then, on a branch or live
 build, the report a pull request gets as its comment (`scripts/pr_report.py summary`: the pull command,
 screenshots and tests first, then runtime, package changes against the release before it or the live
@@ -153,9 +155,14 @@ URLs, which cost no REST quota), uploads it with `actions/upload-pages-artifact`
 released together) is retried after 60 and 120 seconds, each time from a fresh assembly, so the deploy that
 lands last holds both releases; a repository without Pages is not retried.
 
-- **After a live release**, as the Publish job's step `Pages (live)`, after the event to the control plane (the
-  hub ingests meanwhile) and with `continue-on-error`: it never fails the release, and a lost deploy is
-  repaired by the next. deploy-pages wants a job in the `github-pages` environment, so the Publish job enters
+- **After a live release**, as the Publish job's step `Pages (live)`, right after the Release and before the event
+  to the control plane, with `continue-on-error`: it never fails the release, and a lost deploy is repaired by the
+  next. The order is the release path's: the event makes control dispatch the hub, which lists the build, and
+  holds the release's announcement until the build's page on the website is live; that page reads the build's
+  screenshot, report files, file trees and `vulns.json` from this site, so they are deployed first. Since the step
+  cannot fail the run, the event carries its outcome as `pages`: `deployed` (`page_url` set), `failed` (attempted,
+  nothing deployed: control re-dispatches `reason: pages`) or `skipped` (no release). The deploy (about a minute, up
+  to three more with the retries) is the release path's only added wait. deploy-pages wants a job in the `github-pages` environment, so the Publish job enters
   it, but only on a run that can release (live, pushing, not a package check): every other run gets an empty
   environment name, which is none, and leaves no deployment behind. A step, not a job: every job waits for one of
   the 20 runner slots on its own, and the release path takes no extra wait.

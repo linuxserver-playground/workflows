@@ -100,7 +100,11 @@ def test_publish_creates_every_tag_from_the_staging_references(env):
     assert not any(f"-t ghcr.io/o/build/" in c for c in calls)
     out = outputs(env)
     assert out["index_digest"] == INDEX
-    assert f"{IMAGE}:arm64v8-1.2.3-ls4" in json.loads(out["published"])
+    tags = ["latest", "1.2.3-ls4", "version-1.2.3"]
+    # Unprefixed first, then each platform's twins: the order of build.json version.tags, recorded as `published`.
+    assert json.loads(out["published"]) == [f"{IMAGE}:{t}" for t in tags] + [
+        f"{IMAGE}:{p}-{t}" for p in ("amd64", "arm64v8") for t in tags
+    ]
     assert STAGING["amd64"] in Path(env["GITHUB_STEP_SUMMARY"]).read_text()
 
 

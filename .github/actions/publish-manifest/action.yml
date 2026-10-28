@@ -25,7 +25,9 @@ inputs:
 
 outputs:
   index_digest: { value: "${{ steps.publish.outputs.index_digest }}" }
-  published: { value: "${{ steps.publish.outputs.published }}" }
+  published:
+    description: JSON array of every image reference created, unprefixed tags first, then each platform's twins
+    value: ${{ steps.publish.outputs.published }}
 
 runs:
   using: composite

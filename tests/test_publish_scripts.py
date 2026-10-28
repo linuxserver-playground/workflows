@@ -207,6 +207,11 @@ def test_notify_event_shape_and_signature(tmp_path):
     failed = notify.build_event({**env, "RESULT": "failure", "FAILED_JOB": "arch", "PR_NUMBER": "3", "MODE": "pr"}, None)
     assert _validate("control-event", failed) == []
     assert failed["bundle"] is None and failed["failed_job"] == "arch" and failed["pull_request"] == 3
+    assert event["pages"] == "skipped" and failed["pages"] == "skipped"  # no deploy attempted
+    for outcome in ("deployed", "failed"):
+        sent = notify.build_event({**env, "PAGES": outcome}, bundle)
+        assert sent["pages"] == outcome and _validate("control-event", sent) == []
+    assert notify.build_event({**env, "PAGES": "weird"}, bundle)["pages"] == "failed"
     body = b'{"a":1}'
     assert notify.sign(body, "s3cret") == "sha256=" + hmac.new(b"s3cret", body, "sha256").hexdigest()
 
@@ -250,3 +255,17 @@ def test_pr_cleanup_selects_versions():
         {"id": 7, "metadata": {"container": {"tags": ["arm64v8-pr-120-abc1234"]}}},
     ]
     assert [v["id"] for v in pr_cleanup.select_versions(versions, 12)] == [1, 3, 6]
+
+
+def test_bundle_records_the_tags_publish_pushed(tmp_path):
+    out = tmp_path / "out"
+    write_out_dir(out)
+    refs = [f"ghcr.io/o/example:{t}" for t in ("latest", "1.2.3-ls4", "amd64-latest", "amd64-1.2.3-ls4")]
+    bundle = emit_bundle.build_bundle(prepare_outputs(), out, repository="o/docker-example", run_id=42, run_url="https://x/42", workflows_ref="v1", ci_image="ci", reason="push", index_digest=INDEX, published=json.dumps(refs))
+    assert bundle["published"] == {"image": "ghcr.io/o/example", "tags": ["latest", "1.2.3-ls4", "amd64-latest", "amd64-1.2.3-ls4"]}
+    assert _validate("bundle", bundle) == []
+    unpublished = emit_bundle.build_bundle(prepare_outputs(), out, repository="o/docker-example", run_id=42, run_url="https://x/42", workflows_ref="v1", ci_image="ci", reason="push")
+    assert "published" not in unpublished and _validate("bundle", unpublished) == []
+    assert emit_bundle.published_block("not json") is None
+    assert emit_bundle.published_block('["ghcr.io/o/a:1", "ghcr.io/o/b:1"]') is None  # one image only
+    assert emit_bundle.published_block('["ghcr.io/o/a"]') is None  # a reference without a tag
