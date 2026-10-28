@@ -51,16 +51,12 @@ def manifest(version: dict, platforms=("amd64", "arm64")) -> dict:
 # -------------------------------------------------------------------------------------------- github
 
 
-def test_github_release_stable_skips_prerelease_and_draft(http):
-    http(
+def test_github_release_stable_reads_latest(http):
+    fake = http(
         {
-            "https://api.github.com/repos/Sonarr/Sonarr/releases": (
+            "https://api.github.com/repos/Sonarr/Sonarr/releases/latest": (
                 200,
-                [
-                    {"tag_name": "v5.0.0", "draft": True, "prerelease": False, "html_url": "x"},
-                    {"tag_name": "v4.1.0-beta", "draft": False, "prerelease": True, "html_url": "y"},
-                    {"tag_name": "v4.0.20.3014", "draft": False, "prerelease": False, "html_url": "https://github.com/Sonarr/Sonarr/releases/tag/v4.0.20.3014"},
-                ],
+                {"tag_name": "v4.0.20.3014", "html_url": "https://github.com/Sonarr/Sonarr/releases/tag/v4.0.20.3014"},
             )
         }
     )
@@ -72,6 +68,59 @@ def test_github_release_stable_skips_prerelease_and_draft(http):
         "source": "github_release",
         "source_url": "https://github.com/Sonarr/Sonarr/releases/tag/v4.0.20.3014",
     }
+    assert fake.calls == [("GET", "https://api.github.com/repos/Sonarr/Sonarr/releases/latest")]
+
+
+def test_github_release_stable_without_release_raises(http):
+    http({"https://api.github.com/repos/o/r/releases/latest": (404, {"message": "Not Found"})})
+    with pytest.raises(rv.ResolveError, match="no stable release"):
+        rv.resolve(manifest({"type": "github_release", "repo": "o/r"}))
+
+
+def test_github_release_filtered_list_is_newest_published_first(http):
+    # rpcs3-binaries-linux: every release tags one commit, so GitHub lists them by name, not by date.
+    http(
+        {
+            "https://api.github.com/repos/o/r/releases": (
+                200,
+                [
+                    {"tag_name": "build-fff0", "draft": False, "prerelease": False, "published_at": "2021-09-24T18:37:11Z"},
+                    {"tag_name": "build-6c44", "draft": False, "prerelease": False, "published_at": "2026-10-28T09:39:44Z"},
+                    {"tag_name": "build-0000", "draft": True, "prerelease": False, "published_at": "2026-10-29T00:00:00Z"},
+                    {"tag_name": "desktop-1", "draft": False, "prerelease": False, "published_at": "2026-10-28T10:00:00Z"},
+                ],
+            )
+        }
+    )
+    out = rv.resolve(manifest({"type": "github_release", "repo": "o/r", "exclude": "^desktop"}))
+    assert out["upstream"] == "build-6c44"
+    out = rv.resolve(manifest({"type": "github_release", "repo": "o/r", "include": "^build-"}))
+    assert out["upstream"] == "build-6c44"
+
+
+def test_github_release_sort_version(http):
+    http(
+        {
+            "https://api.github.com/repos/nextcloud/server/releases": (
+                200,
+                [
+                    {"tag_name": "v34.0.5", "prerelease": False, "published_at": "2026-10-27T00:00:00Z"},
+                    {"tag_name": "v35.0.2", "prerelease": False, "published_at": "2026-10-20T00:00:00Z"},
+                    {"tag_name": "v35.0.10", "prerelease": False, "published_at": "2026-10-01T00:00:00Z"},
+                    {"tag_name": "v35.0.11rc1", "prerelease": True, "published_at": "2026-10-28T00:00:00Z"},
+                ],
+            )
+        }
+    )
+    out = rv.resolve(manifest({"type": "github_release", "repo": "nextcloud/server", "sort": "version"}))
+    assert out["upstream"] == "v35.0.10"
+    source = {"type": "github_release", "repo": "nextcloud/server", "prerelease": True, "include": "rc", "sort": "version"}
+    assert rv.resolve(manifest(source))["upstream"] == "v35.0.11rc1"
+
+
+def test_version_key_orders_like_sort_v():
+    versions = ["35.0.2rc2", "4.10", "35.0.10", "35.0.2", "4.9.1"]
+    assert sorted(versions, key=rv.version_key) == ["4.9.1", "4.10", "35.0.2", "35.0.2rc2", "35.0.10"]
 
 
 def test_github_release_prerelease_and_exclude(http):
@@ -95,7 +144,7 @@ def test_github_release_prerelease_and_exclude(http):
 def test_github_release_none_matching_raises(http):
     http({"https://api.github.com/repos/o/r/releases": (200, [{"tag_name": "v1", "draft": True}])})
     with pytest.raises(rv.ResolveError):
-        rv.resolve(manifest({"type": "github_release", "repo": "o/r"}))
+        rv.resolve(manifest({"type": "github_release", "repo": "o/r", "exclude": "^nightly"}))
 
 
 def test_github_token_header(http, monkeypatch):
@@ -165,6 +214,70 @@ def test_json_jq_no_output_raises(http):
     http({"https://x/": (200, {"a": 1})})
     with pytest.raises(rv.ResolveError):
         rv.resolve(manifest({"type": "json", "url": "https://x/", "jq": ".missing[]?"}))
+
+
+def test_json_sort_version_takes_the_highest_line(http):
+    http({"https://projects.blender.org/api/v1/repos/blender/blender/tags": (200, [{"name": "v5.2.3"}, {"name": "v5.10.0"}, {"name": "v4.5.9"}])})
+    source = {"type": "json", "url": "https://projects.blender.org/api/v1/repos/blender/blender/tags", "jq": ".[].name", "sort": "version"}
+    assert rv.resolve(manifest(source))["upstream"] == "v5.10.0"
+
+
+def test_regex_first_match_group(http):
+    http({"https://flathub/metainfo.xml": (200, '<release version="2609a" date="x"/>\n<release version="2603" date="y"/>')})
+    source = {"type": "regex", "url": "https://flathub/metainfo.xml", "pattern": '<release version="([^"]+)"'}
+    out = rv.resolve(manifest(source))
+    assert out["upstream"] == "2609a"
+    assert out["source_url"] == "https://flathub/metainfo.xml"
+
+
+def test_regex_sort_version_and_named_group(http):
+    page = '<a href="./8.9.0/">8.9.0/</a> <a href="./9.1.0/">9.1.0/</a> <a href="./9.0.0/">9.0.0/</a>'
+    http({"https://mirrors/digikam/": (200, page)})
+    source = {"type": "regex", "url": "https://mirrors/digikam/", "pattern": 'href="\\./(?P<version>[0-9.]+)/"', "sort": "version"}
+    assert rv.resolve(manifest(source))["upstream"] == "9.1.0"
+
+
+def test_regex_without_match_raises(http):
+    http({"https://x/": (200, "nothing here")})
+    with pytest.raises(rv.ResolveError, match="matched nothing"):
+        rv.resolve(manifest({"type": "regex", "url": "https://x/", "pattern": "v([0-9.]+)"}))
+
+
+def test_regex_search_url_reads_the_redirect(monkeypatch):
+    calls = []
+
+    def fake(url, headers=None, method="GET", timeout=60):
+        calls.append((method, url))
+        return rv.HttpResponse(200, b"", {}, "https://vaemendis.net/ubooquity/downloads/Ubooquity-3.1.0.zip")
+
+    monkeypatch.setattr(rv, "http_get", fake)
+    source = {"type": "regex", "url": "http://vaemendis.net/ubooquity/service/download.php", "pattern": "Ubooquity-([0-9.]+)\\.zip", "search": "url"}
+    assert rv.resolve(manifest(source))["upstream"] == "3.1.0"
+    assert calls == [("HEAD", "http://vaemendis.net/ubooquity/service/download.php")]
+
+
+ARCH = {"results": [{"pkgname": "darktable", "pkgver": "5.6.2", "pkgrel": "1", "epoch": 2}]}
+
+
+def test_arch_package(http):
+    fake = http({"https://archlinux.org/packages/search/json/": (200, ARCH)})
+    out = rv.resolve(manifest({"type": "arch_package", "package": "darktable"}))
+    assert out["upstream"] == "5.6.2"
+    assert out["source_url"] == "https://archlinux.org/packages/extra/x86_64/darktable/"
+    assert fake.calls == [("GET", "https://archlinux.org/packages/search/json/?name=darktable&repo=Extra&arch=x86_64")]
+    assert rv.resolve(manifest({"type": "arch_package", "package": "darktable", "release": True}))["upstream"] == "5.6.2-1"
+
+
+def test_arch_package_missing_raises(http):
+    http({"https://archlinux.org/packages/search/json/": (200, {"results": []})})
+    with pytest.raises(rv.ResolveError, match="not in extra"):
+        rv.resolve(manifest({"type": "arch_package", "package": "nope"}))
+
+
+def test_static():
+    out = rv.resolve(manifest({"type": "static", "version": "7.2.7"}))
+    assert out["upstream"] == "7.2.7"
+    assert out["source_url"] == "none"
 
 
 def test_npm(http):
@@ -309,6 +422,25 @@ def test_command_source_survives_curl_write_error():
     assert rv.resolve(manifest({"type": "command", "run": "(printf '5.3.0\\n'; exit 23) | head -n 1"}))["upstream"] == "5.3.0"
 
 
+def test_command_runner_is_replaceable_and_times_out(monkeypatch):
+    seen = []
+
+    def runner(script):
+        seen.append(script)
+        return rv.subprocess.CompletedProcess(["bash"], 0, "1.0.0\n", "")
+
+    monkeypatch.setattr(rv, "run_command", runner)
+    assert rv.resolve(manifest({"type": "command", "run": "echo hi"}))["upstream"] == "1.0.0"
+    assert seen == ["echo hi"]
+
+    def slow(script):
+        raise rv.subprocess.TimeoutExpired(["bash"], 120)
+
+    monkeypatch.setattr(rv, "run_command", slow)
+    with pytest.raises(rv.ResolveError, match="timed out"):
+        rv.resolve(manifest({"type": "command", "run": "sleep 999"}))
+
+
 def test_combined_joins_its_parts_after_their_own_transforms(http):
     http(
         {
@@ -319,10 +451,7 @@ def test_combined_joins_its_parts_after_their_own_transforms(http):
                     {"tag_name": "docker-v29.9.2", "draft": False, "prerelease": False},
                 ],
             ),
-            "https://api.github.com/repos/docker/compose/releases": (
-                200,
-                [{"tag_name": "v5.6.1", "draft": False, "prerelease": False, "html_url": "c"}],
-            ),
+            "https://api.github.com/repos/docker/compose/releases/latest": (200, {"tag_name": "v5.6.1", "html_url": "c"}),
         }
     )
     source = {
