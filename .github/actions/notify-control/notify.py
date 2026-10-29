@@ -9,9 +9,11 @@ Configuration is by environment:
   RESULT (success|failure|cancelled|skipped), FAILED_JOB, BUNDLE_PATH, RELEASE_URL, ARTIFACT_URL
 
 A failure to deliver is a warning, never a build failure: the control plane reconciles from
-GitHub on its own schedule. Network failures and 5xx answers are retried (scripts/netretry.py), three
-attempts over about half a minute so a control plane that is down does not hold every build's runner;
-control de-duplicates a repeated POST by its body, which is built once.
+GitHub on its own schedule. Network failures and 5xx answers are retried (scripts/netretry.py), five
+attempts over about two and a half minutes: long enough to outlast control restarting for a deploy, which drops
+whatever arrives meanwhile and which nothing replays for an event (control redelivers lost webhooks, not these), and
+short enough that a control plane that is really down holds a runner only that long. Control de-duplicates a repeated
+POST by its body, which is built once.
 """
 
 from __future__ import annotations
@@ -34,7 +36,7 @@ import gha  # noqa: E402
 import netretry  # noqa: E402
 
 
-ATTEMPTS = 3
+ATTEMPTS = 5
 PAGES_OUTCOMES = {"deployed", "failed", "skipped"}
 
 

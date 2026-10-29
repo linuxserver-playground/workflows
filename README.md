@@ -341,9 +341,10 @@ bare numbers, which also occur in digests; and, for curl only, exit codes 5, 6, 
 and 92. Not retried: 4xx answers (a 404 or "release not found" still means not found), refused pushes, and a
 Dockerfile step that failed (`did not complete successfully`) whatever its output says, unless it was throttled.
 `RETRY_MAX_ATTEMPTS`, `RETRY_BASE_DELAY` and `RETRY_MAX_DELAY` override the attempts and delays (the tests set
-the delay to 0). Two calls are kept short on purpose: `notify-control` tries three times (control
-de-duplicates a repeated body; a build never waits long for a control plane that is down), and `package-check`
-keeps its own rebase-and-push loop.
+the delay to 0). Two calls are bounded on purpose: `notify-control` tries five times over about two and a half
+minutes (long enough to outlast control restarting for a deploy, short enough that a control plane that is really
+down holds a runner only that long; control de-duplicates a repeated body), and `package-check` keeps its own
+rebase-and-push loop.
 
 The builder package (`contracts`, `builder`) is installed by `scripts/install_builder.sh <ref>` in `manifest`,
 `emit-bundle` and `pages`: nothing when it already imports, else the source tarball of the ref from
