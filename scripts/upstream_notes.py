@@ -75,7 +75,20 @@ def _json(notes: dict[str, Any], version: str) -> dict[str, str]:
     resp = rv.http_get(url, headers=headers)
     if resp.status != 200:
         return {"text": "", "url": url}
-    return {"text": rv.run_jq(notes["jq"], resp.body), "url": url}
+    expr = notes["jq"].replace("${VERSION}", version).replace("$VERSION", version)
+    return {"text": _jq_text(expr, resp.body), "url": url}
+
+
+def _jq_text(expr: str, body: bytes) -> str:
+    """The whole -r output of a jq expression, as the notes: many lines, blank lines kept (rv.jq_lines keeps one)."""
+    try:
+        proc = subprocess.run(["jq", "-r", expr], input=body, capture_output=True, check=False)
+    except FileNotFoundError as exc:
+        raise rv.ResolveError("jq binary not found; the json notes source needs it") from exc
+    if proc.returncode != 0:
+        raise rv.ResolveError(f"jq failed: {proc.stderr.decode(errors='replace').strip()}")
+    text = proc.stdout.decode(errors="replace").strip()
+    return "" if text == "null" else text
 
 
 def _version_spellings(version: str) -> list[str]:
@@ -120,6 +133,7 @@ def fetch_notes(manifest: dict[str, Any], version: str) -> dict[str, str]:
     kind = notes.get("type", "none")
     if kind == "none":
         return {"text": "", "url": ""}
+    version = rv.apply_transforms(version, notes.get("transform"))
     if kind == "github_release":
         return _github_release(notes, version)
     if kind == "codeberg_release":
