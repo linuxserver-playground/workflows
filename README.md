@@ -282,7 +282,8 @@ The caller subscribes to `pull_request` with `types: [opened, synchronize, reope
 default); then `transform`, sanitising (`~ , % @ + ; : /` and spaces removed), semver derivation and
 `require_assets`: a URL template (`${VERSION}` substituted) that must answer HEAD with 200, or `{asset: <regex>}`,
 an uploaded asset of the resolved release whose name matches (release sources only; read by tag, as a
-Dockerfile reads it, after `${VERSION}` is substituted literally). Either not yet published is exit 3, "assets
+Dockerfile reads it, after `${VERSION}` is substituted literally; with `repo`, the latest release of that other
+repository instead, for an architecture built from a sibling repository). Either not yet published is exit 3, "assets
 not ready", which the scheduler tries again next hour. It has no Actions coupling so the control plane's scheduler imports the same file:
 
 ```python

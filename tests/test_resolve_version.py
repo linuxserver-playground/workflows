@@ -614,6 +614,25 @@ def test_require_assets_pattern_on_codeberg(http):
     assert fake.calls[-1] == ("GET", "https://codeberg.org/api/v1/repos/forgejo/forgejo/releases/tags/v9.0.0")
 
 
+def test_require_assets_pattern_with_repo_reads_that_repos_latest_release(http):
+    arm = "https://api.github.com/repos/RPCS3/rpcs3-binaries-linux-arm64/releases/latest"
+    fake = http(
+        {
+            LATEST: (200, RELEASE),
+            BY_TAG: (200, {"assets": [{"name": "rpcs3-v0.0.43-20511-9508444d_linux64.AppImage"}]}),
+            arm: (200, {"tag_name": "build-1234abcd", "assets": [{"name": "rpcs3-v0.0.43-20510-1234abcd_linux_aarch64.AppImage"}]}),
+        }
+    )
+    src = rpcs3(r"_linux64\.AppImage$")
+    src["require_assets"].append({"asset": r"_linux_aarch64\.AppImage$", "repo": "RPCS3/rpcs3-binaries-linux-arm64"})
+    out = rv.resolve(manifest(src))
+    assert out["upstream"] == "build-9508444d"  # the version still follows the source repository
+    assert fake.calls == [("GET", LATEST), ("GET", BY_TAG), ("GET", arm)]
+    src["require_assets"][1]["asset"] = r"\.app$"
+    with pytest.raises(rv.AssetsNotReady, match="latest release of RPCS3/rpcs3-binaries-linux-arm64"):
+        rv.resolve(manifest(src))
+
+
 def test_require_assets_mixes_urls_and_patterns(http):
     fake = http(
         {
