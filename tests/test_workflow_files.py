@@ -90,6 +90,9 @@ def test_package_check_is_a_check_not_a_release():
     assert publish["repo"]["with"]["persist-credentials"] is True
     # The control plane and the summary see the folded outcome; an unchanged check reports skipped.
     assert 'result="skipped"' in publish["outcome"]["run"]
+    # Any failed step of the job itself (a bundle download, say) makes the summary a failure of "publish".
+    assert publish["outcome"]["env"]["JOB_STATUS"] == "${{ job.status }}"
+    assert '"${JOB_STATUS}" != "success"' in publish["outcome"]["run"]
     notify = publish["Notify control plane"]["with"]
     assert notify["result"] == "${{ steps.outcome.outputs.result }}"
     assert "steps.outcome.outputs.result != 'skipped'" in publish["Fail if any job failed"]["if"]

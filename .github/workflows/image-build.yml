@@ -551,12 +551,14 @@ jobs:
         if: always()
         # Fold the publish job's own steps into the result the control plane and the summary see:
         # a failed publish, release or package commit is a failure of job "publish"; a package check
-        # that found nothing to do is "skipped".
+        # that found nothing to do is "skipped". JOB_STATUS covers every other step of this job: when the
+        # bundle download failed, the named steps were skipped, not failed, and the summary once said
+        # success for a job that was red (docker-grocy, 2026-10-30).
         run: |
           set -euo pipefail
           result="${RESULT}"; failed_job="${FAILED_JOB}"
           if [[ "${result}" == "success" ]]; then
-            if [[ "${MANIFEST}" == "failure" || "${RELEASE}" == "failure" || "${REPO}" == "failure" || "${PACKAGES}" == "failure" ]]; then
+            if [[ "${MANIFEST}" == "failure" || "${RELEASE}" == "failure" || "${REPO}" == "failure" || "${PACKAGES}" == "failure" || "${JOB_STATUS}" != "success" ]]; then
               result="failure"; failed_job="publish"
             elif [[ "${PACKAGE_CHECK}" == "true" && "${CHANGED}" != "true" ]]; then
               result="skipped"
@@ -573,6 +575,7 @@ jobs:
           REPO: ${{ steps.repo.outcome }}
           PACKAGES: ${{ steps.packages.outcome }}
           CHANGED: ${{ steps.packages.outputs.changed }}
+          JOB_STATUS: ${{ job.status }}
 
       - name: Upload bundle
         id: artifact
