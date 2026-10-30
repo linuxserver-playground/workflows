@@ -29,6 +29,15 @@ chmod +x "${dumper_dir}/${dumper_asset}"
 "${dumper_dir}/${dumper_asset}" version
 endgroup
 
+# The repository's root/ tells the harness which s6 units are this image's own (the rest came with a base image).
+root_mount=()
+if [[ -n "${IMAGE_ROOT:-}" && -d "${IMAGE_ROOT}" ]]; then
+  root_abs=$(cd "${IMAGE_ROOT}" && pwd)
+  root_mount=(-v "${root_abs}":/image-root:ro -e IMAGE_ROOT=/image-root)
+else
+  notice "no ${IMAGE_ROOT:-root}/ directory: the harness attributes init units without the repository"
+fi
+
 group "Running ci harness for ${IMAGE} (${ARCH}, ${MODE})"
 start=${SECONDS}
 set +e
@@ -40,6 +49,7 @@ docker run --rm \
   -e MODE="${MODE}" \
   -e MANIFEST_JSON="${MANIFEST_JSON}" \
   -e PREVIOUS_PACKAGES_URL="${PREVIOUS_PACKAGES_URL:-}" \
+  "${root_mount[@]}" \
   -v "${dumper_dir}/${dumper_asset}":/usr/local/bin/dumper:ro \
   -e DUMPER=/usr/local/bin/dumper \
   "${CI_IMAGE}"

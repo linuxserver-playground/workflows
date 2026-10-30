@@ -23,6 +23,11 @@ inputs:
   out_dir:
     description: Host directory mounted at /out
     required: true
+  image_root:
+    description: >-
+      The repository's root/ directory (the files copied to / in the image). Mounted read-only as IMAGE_ROOT so the
+      harness knows which s6 units are this image's own; skipped when the directory does not exist.
+    default: root
 
 outputs:
   success:
@@ -51,3 +56,4 @@ runs:
         CI_IMAGE: ${{ inputs.ci_image }}
         DUMPER_REPOSITORY: ${{ inputs.dumper_repository }}
         OUT_DIR: ${{ inputs.out_dir }}
+        IMAGE_ROOT: ${{ inputs.image_root }}

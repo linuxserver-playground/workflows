@@ -226,9 +226,14 @@ docker run --rm \
   -e MODE="live|dev|pr" \
   -e MANIFEST_JSON="<image.yml as compact JSON>" \
   -e PREVIOUS_PACKAGES_URL="<optional URL of the previous release's package_versions.<arch>.txt>" \
+  -v "<the repository's root/>":/image-root:ro -e IMAGE_ROOT=/image-root \
   -v "<dumper binary>":/usr/local/bin/dumper:ro -e DUMPER=/usr/local/bin/dumper \
   ghcr.io/linuxserver-playground/ci:latest
 ```
+
+The repository's `root/` (input `image_root`, left out when the directory does not exist) tells the harness
+which s6 units are this image's own in `init-graph.<arch>.json`; every other unit is a base image's, and the
+website reads its script from the base image's build.
 
 The dumper binary is the latest stable release of
 [linuxserver-playground/dumper](https://github.com/linuxserver-playground/dumper) for the runner's
