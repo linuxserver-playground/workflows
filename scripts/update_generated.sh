@@ -11,8 +11,9 @@
 # file, since those are never edited by hand.
 #
 # The builder container is run with the repository mounted at /repo (its entrypoint cds there and
-# runs the builder CLI). 'render' is limited to the four in-repo files so .builder-out/ is never
-# written into a live checkout.
+# runs the builder CLI). 'render' is limited to the in-repo files so .builder-out/ is never written
+# into a live checkout. root/donate.txt is rendered only when image.yml lists sponsors and removed
+# otherwise; a removal shows up in the status like any other change and is committed the same way.
 #
 # The commit subject ends in "[skip ci]": the run that made the commit continues on it, so a second
 # run of the same workflow for that push would only build the same tree again (and, when HEAD was
@@ -27,7 +28,7 @@ source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"
 cmd="${1:?render|check}"
 builder_image="${2:-}"
 branch="${3:-}"
-GENERATED_FILES=(README.md AGENTS.md LICENSE .github/workflows/build.yml .github/workflows/pr-report.yml)
+GENERATED_FILES=(README.md AGENTS.md LICENSE .github/FUNDING.yml root/donate.txt .github/workflows/build.yml .github/workflows/pr-report.yml)
 COMMIT_SUBJECT="Update generated files [skip ci]"
 head_sha=$(git rev-parse HEAD)
 
