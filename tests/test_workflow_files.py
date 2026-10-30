@@ -16,7 +16,7 @@ ACTIONS = sorted((ROOT / ".github" / "actions").glob("*/action.yml"))
 TEMPLATES = sorted((ROOT / "templates").glob("*.yml"))
 ALL_YAML = WORKFLOWS + ACTIONS + TEMPLATES
 
-EXPECTED_ACTIONS = {"free-disk", "manifest", "resolve-version", "next-tag", "build-arch", "test-arch", "publish-manifest", "emit-bundle", "record", "release", "notify-control", "package-check", "pages"}
+EXPECTED_ACTIONS = {"free-disk", "manifest", "resolve-version", "next-tag", "build-arch", "test-arch", "publish-manifest", "emit-bundle", "record", "release", "notify-control", "package-check", "pages", "artifact-download", "artifact-upload"}
 CLOSED_PR = "github.event_name == 'pull_request' && github.event.action == 'closed'"
 NOT_PAGES = "inputs.reason != 'pages'"
 ALLOWED_REGISTRIES = re.compile(r"ghcr\.io/(linuxserver-playground/|linuxserver/baseimage-)")
@@ -261,7 +261,7 @@ def test_pages_deploys_after_a_live_release_and_alone_for_reason_pages():
     assert pages["if"] == "${{ inputs.reason == 'pages' }}" and "needs" not in pages
     assert pages["permissions"] == {"contents": "read", "pages": "write", "id-token": "write"}
     assert pages["environment"] == {"name": "github-pages"}
-    assert [s.get("uses") for s in pages["steps"]] == ["actions/checkout@v5", "./.lsio-workflows/.github/actions/pages"]
+    assert [s.get("uses") for s in pages["steps"]] == ["actions/checkout@v5", "actions/checkout@v5", "./.lsio-workflows/.github/actions/pages"]
     for job in ("prepare", "arch", "publish"):
         assert NOT_PAGES in wf["jobs"][job]["if"], job
     action = load(ROOT / ".github" / "actions" / "pages" / "action.yml")
@@ -275,3 +275,31 @@ def test_pages_deploys_after_a_live_release_and_alone_for_reason_pages():
     tpl = load(ROOT / "templates" / "build.yml")
     assert tpl["jobs"]["build"]["permissions"]["pages"] == "write"
     assert "pages" in tpl[True]["workflow_dispatch"]["inputs"]["reason"]["options"]
+
+
+@pytest.mark.parametrize("workflow", ["image-build.yml", "mod-build.yml"])
+def test_cheap_network_steps_get_a_second_attempt(workflow: str) -> None:
+    """Checkouts are pairs (the first continues on error, its twin runs when it failed) and the artifact steps go
+    through the retrying composites, so a flaky clone or artifact transfer costs seconds, not a self-healing re-run."""
+    wf = load(ROOT / ".github" / "workflows" / workflow)
+    for job_name, job in wf["jobs"].items():
+        steps = job["steps"]
+        for index, step in enumerate(steps):
+            uses = str(step.get("uses", ""))
+            assert not uses.startswith(("actions/download-artifact", "actions/upload-artifact")), (job_name, step["name"])
+            if not uses.startswith("actions/checkout@") or step["name"].endswith(" (retry)"):
+                continue
+            assert step["continue-on-error"] is True and step.get("id"), (job_name, step["name"])
+            twin = steps[index + 1]
+            assert twin["name"] == f"{step['name']} (retry)" and twin["uses"] == uses and twin["with"] == step["with"]
+            assert f"steps.{step['id']}.outcome == 'failure'" in twin["if"], (job_name, step["name"])
+            if "if" in step:
+                assert step["if"] in twin["if"], (job_name, step["name"])
+    for name in ("artifact-download", "artifact-upload"):
+        action = load(ROOT / ".github" / "actions" / name / "action.yml")
+        attempts = [s for s in action["runs"]["steps"] if str(s.get("uses", "")).startswith("actions/")]
+        assert len(attempts) == 2 and attempts[0]["continue-on-error"] is True
+        assert attempts[1]["if"] == "steps.first.outcome == 'failure'"
+    publish = _steps(wf, "publish")
+    if workflow == "image-build.yml":
+        assert publish["outcome"]["env"]["REPO"] == "${{ steps.repo.outcome == 'failure' && steps.repo_retry.outcome || steps.repo.outcome }}"

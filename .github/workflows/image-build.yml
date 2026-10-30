@@ -106,6 +106,16 @@ jobs:
       package_check: ${{ inputs.reason == 'packages' && steps.manifest.outputs.mode == 'live' && steps.manifest.outputs.push_images == 'true' }}
     steps:
       - name: Check out repository
+        id: co_repo
+        continue-on-error: true  # a second attempt follows; the clone is GitHub's to fail
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Check out repository (retry)
+        if: steps.co_repo.outcome == 'failure'
         uses: actions/checkout@v5
         with:
           ref: ${{ github.event_name == 'pull_request' && github.event.pull_request.head.sha || github.sha }}
@@ -113,6 +123,17 @@ jobs:
           persist-credentials: true
 
       - name: Check out shared workflows
+        id: co_workflows
+        continue-on-error: true  # a second attempt follows; the clone is GitHub's to fail
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.WORKFLOWS_REPOSITORY }}
+          ref: ${{ inputs.workflows_ref }}
+          path: ${{ env.WORKFLOWS_PATH }}
+          persist-credentials: false
+
+      - name: Check out shared workflows (retry)
+        if: steps.co_workflows.outcome == 'failure'
         uses: actions/checkout@v5
         with:
           repository: ${{ env.WORKFLOWS_REPOSITORY }}
@@ -132,7 +153,7 @@ jobs:
       # The manifest travels as an artifact, not a job output: the runner drops any output that happens
       # to contain a masked value, and image.yml text can match one by chance (kimai did).
       - name: Upload manifest
-        uses: actions/upload-artifact@v7
+        uses: ./.lsio-workflows/.github/actions/artifact-upload
         with:
           name: manifest
           path: ${{ steps.manifest.outputs.manifest_path }}
@@ -271,12 +292,32 @@ jobs:
       # The repository goes first: actions/checkout empties a workspace that is not yet a clone,
       # which would remove a shared-workflows checkout made before it.
       - name: Check out repository
+        id: co_repo
+        continue-on-error: true  # a second attempt follows; the clone is GitHub's to fail
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.checkout_sha }}
+          persist-credentials: false
+
+      - name: Check out repository (retry)
+        if: steps.co_repo.outcome == 'failure'
         uses: actions/checkout@v5
         with:
           ref: ${{ needs.prepare.outputs.checkout_sha }}
           persist-credentials: false
 
       - name: Check out shared workflows
+        id: co_workflows
+        continue-on-error: true  # a second attempt follows; the clone is GitHub's to fail
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.WORKFLOWS_REPOSITORY }}
+          ref: ${{ inputs.workflows_ref }}
+          path: ${{ env.WORKFLOWS_PATH }}
+          persist-credentials: false
+
+      - name: Check out shared workflows (retry)
+        if: steps.co_workflows.outcome == 'failure'
         uses: actions/checkout@v5
         with:
           repository: ${{ env.WORKFLOWS_REPOSITORY }}
@@ -323,7 +364,7 @@ jobs:
           out_dir: out
 
       - name: Download manifest
-        uses: actions/download-artifact@v8
+        uses: ./.lsio-workflows/.github/actions/artifact-download
         with:
           name: manifest
           path: ${{ runner.temp }}/lsio
@@ -342,7 +383,7 @@ jobs:
 
       - name: Upload bundle files
         if: always()
-        uses: actions/upload-artifact@v7
+        uses: ./.lsio-workflows/.github/actions/artifact-upload
         with:
           name: bundle-${{ matrix.arch }}
           path: |
@@ -353,7 +394,7 @@ jobs:
 
       - name: Upload image (not pushed)
         if: always() && needs.prepare.outputs.push_images != 'true' && hashFiles(format('out/image.{0}.tar.gz', matrix.arch)) != ''
-        uses: actions/upload-artifact@v7
+        uses: ./.lsio-workflows/.github/actions/artifact-upload
         with:
           name: image-${{ matrix.arch }}
           path: out/image.${{ matrix.arch }}.tar.gz
@@ -410,6 +451,17 @@ jobs:
           ARCH: ${{ needs.arch.result }}
 
       - name: Check out shared workflows
+        id: co_workflows
+        continue-on-error: true  # a second attempt follows; the clone is GitHub's to fail
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.WORKFLOWS_REPOSITORY }}
+          ref: ${{ inputs.workflows_ref }}
+          path: ${{ env.WORKFLOWS_PATH }}
+          persist-credentials: false
+
+      - name: Check out shared workflows (retry)
+        if: steps.co_workflows.outcome == 'failure'
         uses: actions/checkout@v5
         with:
           repository: ${{ env.WORKFLOWS_REPOSITORY }}
@@ -419,7 +471,7 @@ jobs:
 
       - name: Download bundle files
         if: needs.prepare.result == 'success'
-        uses: actions/download-artifact@v8
+        uses: ./.lsio-workflows/.github/actions/artifact-download
         with:
           pattern: bundle-*
           path: out
@@ -427,7 +479,7 @@ jobs:
 
       - name: Download manifest
         if: needs.prepare.result == 'success'
-        uses: actions/download-artifact@v8
+        uses: ./.lsio-workflows/.github/actions/artifact-download
         with:
           name: manifest
           path: ${{ runner.temp }}/lsio
@@ -526,8 +578,19 @@ jobs:
 
       # ---- reason=packages (live): compare, commit on change, never publish or release ----
       - name: Check out repository (package check)
+        continue-on-error: true  # a second attempt follows; the clone is GitHub's to fail
         id: repo
         if: steps.result.outputs.result == 'success' && env.PACKAGE_CHECK == 'true'
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.release_branch }}
+          path: repo
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Check out repository (package check) (retry)
+        id: repo_retry
+        if: steps.repo.outcome == 'failure' && (steps.result.outputs.result == 'success' && env.PACKAGE_CHECK == 'true')
         uses: actions/checkout@v5
         with:
           ref: ${{ needs.prepare.outputs.release_branch }}
@@ -572,7 +635,7 @@ jobs:
           FAILED_JOB: ${{ steps.result.outputs.failed_job }}
           MANIFEST: ${{ steps.manifest.outcome }}
           RELEASE: ${{ steps.release.outcome }}
-          REPO: ${{ steps.repo.outcome }}
+          REPO: ${{ steps.repo.outcome == 'failure' && steps.repo_retry.outcome || steps.repo.outcome }}
           PACKAGES: ${{ steps.packages.outcome }}
           CHANGED: ${{ steps.packages.outputs.changed }}
           JOB_STATUS: ${{ job.status }}
@@ -580,7 +643,7 @@ jobs:
       - name: Upload bundle
         id: artifact
         if: always() && needs.prepare.result == 'success' && hashFiles('out/**') != ''
-        uses: actions/upload-artifact@v7
+        uses: ./.lsio-workflows/.github/actions/artifact-upload
         with:
           name: bundle
           path: |
@@ -714,6 +777,17 @@ jobs:
       name: github-pages
     steps:
       - name: Check out shared workflows
+        id: co_workflows
+        continue-on-error: true  # a second attempt follows; the clone is GitHub's to fail
+        uses: actions/checkout@v5
+        with:
+          repository: ${{ env.WORKFLOWS_REPOSITORY }}
+          ref: ${{ inputs.workflows_ref }}
+          path: ${{ env.WORKFLOWS_PATH }}
+          persist-credentials: false
+
+      - name: Check out shared workflows (retry)
+        if: steps.co_workflows.outcome == 'failure'
         uses: actions/checkout@v5
         with:
           repository: ${{ env.WORKFLOWS_REPOSITORY }}

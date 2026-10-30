@@ -1,0 +1,48 @@
+name: artifact-download
+description: >-
+  actions/download-artifact with a second attempt. The artifact service fails a download now and then after the
+  action's own retries (README "Network retries"); a second attempt a few seconds later costs nothing, where the
+  self-healing re-run it would otherwise take costs a rebuild.
+
+inputs:
+  name:
+    description: The artifact to download; empty with `pattern`
+    default: ""
+  pattern:
+    description: A glob over artifact names, downloaded together
+    default: ""
+  path:
+    description: Where to put the files
+    required: true
+  merge-multiple:
+    description: With `pattern`, merge every matching artifact into `path`
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - name: Download
+      id: first
+      continue-on-error: true
+      uses: actions/download-artifact@v8
+      with:
+        name: ${{ inputs.name }}
+        pattern: ${{ inputs.pattern }}
+        path: ${{ inputs.path }}
+        merge-multiple: ${{ inputs.merge-multiple }}
+
+    - name: Wait before the second attempt
+      if: steps.first.outcome == 'failure'
+      shell: bash
+      run: |
+        echo "::warning::artifact download failed once; trying again in 20 s"
+        sleep 20
+
+    - name: Download (retry)
+      if: steps.first.outcome == 'failure'
+      uses: actions/download-artifact@v8
+      with:
+        name: ${{ inputs.name }}
+        pattern: ${{ inputs.pattern }}
+        path: ${{ inputs.path }}
+        merge-multiple: ${{ inputs.merge-multiple }}

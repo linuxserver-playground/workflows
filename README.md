@@ -353,8 +353,12 @@ rebase-and-push loop.
 The builder package (`contracts`, `builder`) is installed by `scripts/install_builder.sh <ref>` in `manifest`,
 `emit-bundle` and `pages`: nothing when it already imports, else the source tarball of the ref from
 `codeload.github.com` (one retried HTTPS GET) and `pip install` of that file (retried). It replaced
-`pip install git+https://...`, whose clone neither git nor pip retries. The third-party actions are not wrapped:
-checkout and the artifact actions retry their own transfers, a cache that cannot be restored only warns, and
+`pip install git+https://...`, whose clone neither git nor pip retries. The third-party actions whose failures
+control saw most get a second attempt inside the run: every checkout is a pair of steps (the first continues on
+error, `<name> (retry)` runs when it failed), and the artifact uploads and downloads go through the
+`artifact-upload` and `artifact-download` composites, which try again after 20 s (the upload with `overwrite`).
+A second attempt costs seconds where control's self-healing re-run of the failed jobs costs a rebuild; control
+still re-runs once when the second attempt failed too. A cache that cannot be restored only warns, and
 setup-buildx, login, attest-build-provenance, upload-pages-artifact and deploy-pages run as they are (a refused
 Pages deploy has the `pages` action's own retries, above).
 
