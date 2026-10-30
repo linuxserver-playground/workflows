@@ -528,6 +528,106 @@ def test_require_assets_missing_is_not_ready(http):
         rv.resolve(manifest({"type": "pip", "package": "x", "require_assets": ["https://dl.example.org/${VERSION}.zip"]}))
 
 
+LATEST = "https://api.github.com/repos/RPCS3/rpcs3-binaries-linux/releases/latest"
+BY_TAG = "https://api.github.com/repos/RPCS3/rpcs3-binaries-linux/releases/tags/build-9508444d"
+RELEASE = {"tag_name": "build-9508444d", "html_url": "https://github.com/RPCS3/rpcs3-binaries-linux/releases/tag/build-9508444d"}
+
+
+def rpcs3(*patterns: str) -> dict:
+    return {"type": "github_release", "repo": "RPCS3/rpcs3-binaries-linux", "require_assets": [{"asset": p} for p in patterns]}
+
+
+def test_require_assets_pattern_reads_the_release_by_tag(http):
+    fake = http(
+        {
+            LATEST: (200, RELEASE),
+            BY_TAG: (200, {"assets": [{"name": "rpcs3-v0.0.43-20511-9508444d_linux64.AppImage", "state": "uploaded"}]}),
+        }
+    )
+    out = rv.resolve(manifest(rpcs3(r"_linux64\.AppImage$")))
+    assert out["upstream"] == "build-9508444d"
+    assert fake.calls == [("GET", LATEST), ("GET", BY_TAG)]
+
+
+def test_require_assets_pattern_missing_names_the_uploaded_assets(http):
+    http({LATEST: (200, RELEASE), BY_TAG: (200, {"assets": [{"name": "rpcs3-v0.0.43-20511-9508444d_linux_arm64.AppImage"}]})})
+    with pytest.raises(rv.AssetsNotReady) as exc:
+        rv.resolve(manifest(rpcs3(r"_linux64\.AppImage$")))
+    assert "no asset of release build-9508444d matches" in str(exc.value)
+    assert "rpcs3-v0.0.43-20511-9508444d_linux_arm64.AppImage" in str(exc.value)
+
+
+def test_require_assets_pattern_skips_an_asset_still_uploading(http):
+    http({LATEST: (200, RELEASE), BY_TAG: (200, {"assets": [{"name": "rpcs3-linux64.AppImage", "state": "open"}]})})
+    with pytest.raises(rv.AssetsNotReady):
+        rv.resolve(manifest(rpcs3("linux64")))
+
+
+def test_require_assets_patterns_share_one_asset_read(http):
+    fake = http(
+        {
+            LATEST: (200, RELEASE),
+            BY_TAG: (200, {"assets": [{"name": "rpcs3-linux64.AppImage"}, {"name": "rpcs3-linux_arm64.AppImage"}]}),
+        }
+    )
+    rv.resolve(manifest(rpcs3("linux64", "linux_arm64")))
+    assert fake.calls.count(("GET", BY_TAG)) == 1
+
+
+def test_require_assets_pattern_substitutes_the_version_literally(http):
+    latest = "https://api.github.com/repos/VSCodium/vscodium/releases/latest"
+    by_tag = "https://api.github.com/repos/VSCodium/vscodium/releases/tags/1.105.17071"
+    http(
+        {
+            latest: (200, {"tag_name": "1.105.17071"}),
+            by_tag: (200, {"assets": [{"name": "codium_1.105.17071_amd64.deb"}, {"name": "codium_1x105x17071_arm64.deb"}]}),
+        }
+    )
+    src = {"type": "github_release", "repo": "VSCodium/vscodium", "require_assets": [{"asset": r"^codium_${VERSION}_amd64\.deb$"}]}
+    rv.resolve(manifest(src))
+    src["require_assets"] = [{"asset": r"^codium_${VERSION}_arm64\.deb$"}]
+    with pytest.raises(rv.AssetsNotReady):
+        rv.resolve(manifest(src))
+
+
+def test_require_assets_pattern_when_the_release_vanished_is_not_ready(http):
+    http({LATEST: (200, RELEASE)})
+    with pytest.raises(rv.AssetsNotReady):
+        rv.resolve(manifest(rpcs3("AppImage")))
+
+
+def test_require_assets_pattern_needs_a_release_source(http):
+    http({"https://pypi.org/pypi/x/json": (200, {"info": {"version": "2.0"}})})
+    with pytest.raises(rv.ResolveError, match="need one of github_release"):
+        rv.resolve(manifest({"type": "pip", "package": "x", "require_assets": [{"asset": "x"}]}))
+
+
+def test_require_assets_pattern_on_codeberg(http):
+    fake = http(
+        {
+            "https://codeberg.org/api/v1/repos/forgejo/forgejo/releases?limit=50": (200, [{"tag_name": "v9.0.0", "prerelease": False}]),
+            "https://codeberg.org/api/v1/repos/forgejo/forgejo/releases/tags/v9.0.0": (200, {"assets": [{"name": "forgejo-9.0.0-linux-amd64"}]}),
+        }
+    )
+    src = {"type": "codeberg_release", "repo": "forgejo/forgejo", "require_assets": [{"asset": "linux-amd64$"}]}
+    rv.resolve(manifest(src))
+    assert fake.calls[-1] == ("GET", "https://codeberg.org/api/v1/repos/forgejo/forgejo/releases/tags/v9.0.0")
+
+
+def test_require_assets_mixes_urls_and_patterns(http):
+    fake = http(
+        {
+            LATEST: (200, RELEASE),
+            BY_TAG: (200, {"assets": [{"name": "rpcs3-linux64.AppImage"}]}),
+            "https://dl.example.org/build-9508444d.txt": (200, b""),
+        }
+    )
+    src = rpcs3("linux64")
+    src["require_assets"].append("https://dl.example.org/${VERSION}.txt")
+    rv.resolve(manifest(src))
+    assert ("HEAD", "https://dl.example.org/build-9508444d.txt") in fake.calls
+
+
 def test_empty_or_null_version_raises(http):
     http({"https://pypi.org/pypi/x/json": (200, {"info": {"version": "null"}})})
     with pytest.raises(rv.ResolveError):

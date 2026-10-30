@@ -280,7 +280,10 @@ The caller subscribes to `pull_request` with `types: [opened, synchronize, reope
 `deb_packages`, `deb_repo` (`docker run` + `apt-cache`), `blob` (md5), `os` (md5 of `package_versions.txt`)
 `command` and `combined` (several sources, each with its own `transform`, joined with `separator`, `-` by
 default); then `transform`, sanitising (`~ , % @ + ; : /` and spaces removed), semver derivation and
-`require_assets`. It has no Actions coupling so the control plane's scheduler imports the same file:
+`require_assets`: a URL template (`${VERSION}` substituted) that must answer HEAD with 200, or `{asset: <regex>}`,
+an uploaded asset of the resolved release whose name matches (release sources only; read by tag, as a
+Dockerfile reads it, after `${VERSION}` is substituted literally). Either not yet published is exit 3, "assets
+not ready", which the scheduler tries again next hour. It has no Actions coupling so the control plane's scheduler imports the same file:
 
 ```python
 from resolve_version import resolve, load_manifest
