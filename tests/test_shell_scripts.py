@@ -257,7 +257,44 @@ def test_package_compare_treats_a_missing_file_as_changed(env, tmp_path):
     proc = package_check(env, tmp_path, clone, TABLE)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert outputs(env)["changed"] == "true" and outputs(env)["committed_hash"] == "none"
-    assert outputs(env)["status"] == "missing"
+    assert outputs(env)["status"] == "missing" and outputs(env)["catch_up"] == "false"
+
+
+def previous_release(tmp_path: Path, tag: str, amd64: str, arm64: str | None = None) -> dict:
+    """A file:// stand-in for the previous release's download URLs."""
+    d = tmp_path / "releases" / tag
+    d.mkdir(parents=True)
+    (d / "package_versions.amd64.txt").write_text(amd64)
+    if arm64 is not None:
+        (d / "package_versions.arm64.txt").write_text(arm64)
+    return {"PREVIOUS_TAG": tag, "RELEASE_DOWNLOAD_BASE": f"file://{tmp_path / 'releases'}"}
+
+
+def test_package_compare_catches_up_a_table_another_pipeline_wrote(env, tmp_path):
+    # craft-apps v0.18.0-ls5 (2026-10-31): the branch still carried Jenkins' table, the image was ls4's, and the
+    # check released it. Now the previous release's asset decides: nothing changed, catch the branch up.
+    origin, clone = make_remote(tmp_path, {"package_versions.txt": "NAME VERSION TYPE\nbash 5.2.37 apk\n"})
+    proc = package_check(env, tmp_path, clone, TABLE, **previous_release(tmp_path, "1.0-ls4", TABLE))
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    out = outputs(env)
+    assert out["changed"] == "false" and out["status"] == "released" and out["catch_up"] == "true"
+    assert git("log", "--format=%s", cwd=origin) == "Initial"  # the commit is the commit step's
+    summary = Path(env["GITHUB_STEP_SUMMARY"]).read_text()
+    assert "packages unchanged since 1.0-ls4" in summary and "Nothing published" in summary
+    # A missing file with the same image: the same, seeded by the commit step rather than a release.
+    origin, clone = make_remote(tmp_path / "second", {"README.md": "# x\n"})
+    proc = package_check(env, tmp_path / "second", clone, TABLE, **previous_release(tmp_path / "second", "1.0-ls4", TABLE))
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert outputs(env)["catch_up"] == "true" and outputs(env)["status"] == "released"
+
+
+def test_package_compare_releases_when_the_previous_release_differs_too(env, tmp_path):
+    origin, clone = make_remote(tmp_path, {"package_versions.txt": "NAME VERSION TYPE\nbash 5.2.37 apk\n"})
+    proc = package_check(env, tmp_path, clone, NEW_TABLE, **previous_release(tmp_path, "1.0-ls4", TABLE, TABLE))
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    out = outputs(env)
+    assert out["changed"] == "true" and out["status"] == "different" and out["catch_up"] == "false"
+    assert "amd64 against 1.0-ls4: different" in Path(env["GITHUB_STEP_SUMMARY"]).read_text()
 
 
 def test_package_commit_writes_the_table_with_skip_ci(env, tmp_path):

@@ -98,7 +98,8 @@ def test_package_check_is_one_build_that_releases_only_on_a_change():
     assert publish["repo"]["with"]["persist-credentials"] is True
     assert publish["repo"]["if"] == "steps.result.outputs.result == 'success' && env.PUSH == 'true' && env.MODE == 'live'"
     table = publish["table"]
-    assert table["if"] == "steps.release.outcome == 'success'" and table["continue-on-error"] is True
+    # After the release, and after a check that found only the branch's table stale (catch_up).
+    assert table["if"] == "steps.release.outcome == 'success' || steps.compare.outputs.catch_up == 'true'" and table["continue-on-error"] is True
     assert table["with"]["mode"] == "commit" and table["with"]["branch"] == "${{ needs.prepare.outputs.release_branch }}"
     text = (ROOT / ".github" / "workflows" / "image-build.yml").read_text()
     assert "gh workflow run" not in text and "actions: write" not in text

@@ -2,12 +2,15 @@
 # The package table steps of the publish job (Jenkins "Update-packages" parity, without its second build).
 #
 #   package_check.sh compare   reason=packages only, before anything is published: compare the fresh amd64
-#                              table with the committed package_versions.txt at the built commit. Outputs
-#                              changed (true|false), status (same|different|missing), fresh_hash,
-#                              committed_hash. "unchanged" means the run publishes and releases nothing;
-#                              "changed" (or no table in the repo yet) means it goes on to release like any
-#                              other build. arm64 is compared with the previous release's asset for the
-#                              summary only.
+#                              table with the committed package_versions.txt at the built commit, and when
+#                              that differs or is missing, with the previous release's amd64 asset. Outputs
+#                              changed (true|false), status (same|different|missing|released), catch_up,
+#                              fresh_hash, committed_hash. "unchanged" means the run publishes and releases
+#                              nothing; "changed" means it goes on to release like any other build;
+#                              "released" (catch_up=true) means the image is the previous release's and only
+#                              the branch's file is stale (another pipeline's table, or none yet), so the run
+#                              publishes nothing and the commit step catches the branch up. arm64 is compared
+#                              with the previous release's asset for the summary only.
 #   package_check.sh commit    after a successful release, every live build: commit the fresh amd64 table
 #                              to the live branch as "Update package versions [skip ci]" when the branch's
 #                              table differs (fetch, rebase, push, retried). Outputs committed (true|false)
@@ -25,6 +28,8 @@ mode="${1:-}"
 [[ "${mode}" == "compare" || "${mode}" == "commit" ]] || die "usage: package_check.sh compare|commit"
 : "${OUT_DIR:?}" "${REPO_DIR:?}"
 PREVIOUS_TAG="${PREVIOUS_TAG:-}"
+# The previous release's assets; tests point it at a file:// directory.
+RELEASE_DOWNLOAD_BASE="${RELEASE_DOWNLOAD_BASE:-https://github.com/${REPOSITORY:-}/releases/download}"
 PUSH_ATTEMPTS="${PUSH_ATTEMPTS:-3}"
 PUSH_DELAY="${PUSH_DELAY:-10}"
 COMMIT_SUBJECT="Update package versions [skip ci]"
@@ -48,28 +53,42 @@ if [[ "${mode}" == "compare" ]]; then
     notice "no package_versions.txt at ${SHA:0:7}; this release seeds it"
   fi
 
-  arm64_args=()
-  if [[ -n "${PREVIOUS_TAG}" && -f "${out_abs}/package_versions.arm64.txt" ]]; then
-    arm64_args=(--fresh-arm64 "${out_abs}/package_versions.arm64.txt" \
-      --previous-arm64-url "https://github.com/${REPOSITORY}/releases/download/${PREVIOUS_TAG}/package_versions.arm64.txt")
+  # ---- The previous release's tables: amd64 decides when the committed table does not match, arm64 reports ----
+  previous_args=()
+  if [[ -n "${PREVIOUS_TAG}" ]]; then
+    previous_args=(--previous-amd64-url "${RELEASE_DOWNLOAD_BASE}/${PREVIOUS_TAG}/package_versions.amd64.txt")
+    if [[ -f "${out_abs}/package_versions.arm64.txt" ]]; then
+      previous_args+=(--fresh-arm64 "${out_abs}/package_versions.arm64.txt" \
+        --previous-arm64-url "${RELEASE_DOWNLOAD_BASE}/${PREVIOUS_TAG}/package_versions.arm64.txt")
+    fi
   fi
 
-  result=$(python3 "${scripts}/package_versions.py" compare --fresh "${fresh}" "${committed_args[@]}" "${arm64_args[@]}")
+  result=$(python3 "${scripts}/package_versions.py" compare --fresh "${fresh}" "${committed_args[@]}" "${previous_args[@]}")
   echo "${result}"
   changed=$(jq -r '.changed' <<< "${result}")
   status=$(jq -r '.status' <<< "${result}")
+  catch_up=$(jq -r '.catch_up' <<< "${result}")
   fresh_hash=$(jq -r '.fresh' <<< "${result}")
   committed_hash=$(jq -r '.committed' <<< "${result}")
+  previous_status=$(jq -r '.previous.status // "not compared"' <<< "${result}")
   arm64_status=$(jq -r '.arm64.status // "not compared"' <<< "${result}")
 
   set_output changed "${changed}"
   set_output status "${status}"
+  set_output catch_up "${catch_up}"
   set_output fresh_hash "${fresh_hash}"
   set_output committed_hash "${committed_hash}"
   if [[ "${changed}" == "true" ]]; then
     summary "### Package check
 
-packages changed (\`${committed_hash}\` -> \`${fresh_hash}\`, ${status}) since \`${SHA:0:7}\`; arm64 against ${PREVIOUS_TAG:-no previous release}: ${arm64_status}. This run releases."
+packages changed (\`${committed_hash}\` -> \`${fresh_hash}\`, ${status}) since \`${SHA:0:7}\`; amd64 against ${PREVIOUS_TAG:-no previous release}: ${previous_status}; arm64: ${arm64_status}. This run releases."
+  elif [[ "${catch_up}" == "true" ]]; then
+    committed_desc="missing"
+    [[ "${committed_hash}" != "none" ]] && committed_desc="\`${committed_hash}\`, not this pipeline's"
+    notice "package_versions.txt at ${SHA:0:7} (${committed_desc}) does not match, but the image is ${PREVIOUS_TAG}'s; catching the branch up instead of releasing"
+    summary "### Package check
+
+packages unchanged since ${PREVIOUS_TAG} (\`${fresh_hash}\`); the committed table at \`${SHA:0:7}\` (${committed_desc}) is committed now; arm64: ${arm64_status}. Nothing published."
   else
     summary "### Package check
 

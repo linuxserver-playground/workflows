@@ -532,8 +532,10 @@ jobs:
 
       - name: Compare package table (reason=packages)
         id: compare
-        # The weekly package check: the fresh amd64 table against the committed one at the built commit. Unchanged
-        # means this run publishes and releases nothing; changed means it releases like any other build.
+        # The weekly package check: the fresh amd64 table against the committed one at the built commit, and when
+        # that differs, against the previous release's asset. Unchanged means this run publishes and releases
+        # nothing; changed means it releases like any other build; a stale committed table under an unchanged
+        # image (catch_up) publishes nothing and only commits the table below.
         if: steps.result.outputs.result == 'success' && env.PACKAGE_CHECK == 'true'
         uses: ./.lsio-workflows/.github/actions/package-check
         with:
@@ -639,8 +641,9 @@ jobs:
         # The amd64 table of the image just released, onto the live branch as "Update package versions [skip ci]"
         # when it differs. No build follows (the control plane's release check knows the file); a failed push only
         # warns, the next release commits it. Jenkins did this in a second build; this is the same table from the
-        # same run.
-        if: steps.release.outcome == 'success'
+        # same run. Also after a package check that released nothing because only the branch's table was stale
+        # (catch_up): the next check then compares against this pipeline's own table.
+        if: steps.release.outcome == 'success' || steps.compare.outputs.catch_up == 'true'
         continue-on-error: true
         uses: ./.lsio-workflows/.github/actions/package-check
         with:
@@ -746,7 +749,9 @@ jobs:
             echo "<details><summary>Build details</summary>"
             echo
             if [[ "${PACKAGE_CHECK}" == "true" ]]; then
-              if [[ "${SKIP}" == "true" ]]; then
+              if [[ "${CATCH_UP}" == "true" ]]; then
+                echo "Package check: packages unchanged since the previous release, nothing published; the committed table was not this pipeline's and is caught up below"
+              elif [[ "${SKIP}" == "true" ]]; then
                 echo "Package check: packages unchanged, nothing published"
               else
                 echo "Package check: packages changed, released from this run"
@@ -791,6 +796,7 @@ jobs:
           ARTIFACT_URL: ${{ steps.artifact.outputs.artifact-url }}
           STAGING: ${{ needs.prepare.outputs.staging_refs }}
           SKIP: ${{ steps.gate.outputs.skip }}
+          CATCH_UP: ${{ steps.compare.outputs.catch_up }}
           TABLE: ${{ steps.table.outcome }}
           COMMITTED: ${{ steps.table.outputs.committed }}
           COMMIT_SHA: ${{ steps.table.outputs.commit_sha }}

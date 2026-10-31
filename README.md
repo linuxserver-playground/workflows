@@ -123,17 +123,26 @@ branch's workflow, and no job in it checks out, builds or runs pull request code
 **`packages` on a live branch** (what Jenkins' `Update-packages` stage did, in one build instead of two): prepare,
 build and test run as normal because the fresh image is needed to know its packages. Then `package-check compare`
 compares the fresh `package_versions.amd64.txt` with the committed `package_versions.txt` (the amd64 table) at the
-built commit, by md5 with trailing whitespace normalised, and compares arm64 against the previous release's
-`package_versions.arm64.txt` asset for reporting only.
+built commit, by md5 with trailing whitespace normalised. When that differs or is missing, it compares the fresh
+table with the previous release's `package_versions.amd64.txt` asset, which is the authority: the committed file
+is only a fast path and may have been written by another pipeline (Jenkins' table on a converted repository, with
+its own layout and sort order). arm64 is compared against the previous release's asset for reporting only.
 
 - Unchanged: nothing is published or released; the bundle is a workflow artifact only; `build.summary` says
   `result: skipped` (no `failed_job`); the job summary says "packages unchanged"; the run succeeds.
-- Changed, or no `package_versions.txt` in the repo yet: the run publishes and releases like any other build.
-  `next-tag` runs with `fresh`, so the release is `-ls<N+1>` even though HEAD is the released commit (plus its
-  table commit, which `next-tag` looks through): a package check never overwrites the released tag.
+- Changed since the previous release (or no previous release and no `package_versions.txt` in the repo yet): the
+  run publishes and releases like any other build. `next-tag` runs with `fresh`, so the release is `-ls<N+1>`
+  even though HEAD is the released commit (plus its table commit, which `next-tag` looks through): a package
+  check never overwrites the released tag.
+- The committed table differs but the previous release's does not (`status: released`, `catch_up`): nothing is
+  published, and `package-check commit` runs anyway so the branch carries this pipeline's table from then on.
+  Without this, every branch whose file was not ours released once for nothing on its first check: craft-apps
+  v0.18.0-ls5 (2026-10-31) was ls4's image again, released because the file was still Jenkins'. An asset that
+  cannot be read leaves the committed table's verdict.
 
-**Every successful live release** then runs `package-check commit`: the fresh amd64 table goes onto the live
-branch as `Update package versions [skip ci]` when the branch's table differs (fetch, rebase, push, retried).
+**Every successful live release** (and a package check that only found the branch's table stale) then runs
+`package-check commit`: the fresh amd64 table goes onto the live branch as `Update package versions [skip ci]`
+when the branch's table differs (fetch, rebase, push, retried).
 No build follows: the control plane's release check counts a head that differs from the released commit only in
 `package_versions.txt` (and the generated files) as released, and `next-tag` reads the tags of the commit under
 it, so a rebuild from there republishes the same `-lsN`. A push that still fails after the retries is a warning,
@@ -189,7 +198,7 @@ The workflow makes exactly two kinds of commit on live branches (CONVENTIONS §8
 | Subject | Made by | Starts a build? |
 | --- | --- | --- |
 | `Update generated files [skip ci]` | prepare, after `builder render` changed README, AGENTS.md, LICENSE or the caller workflow | No. The run that made it continues on it, so another run would only rebuild the same tree (and, when HEAD was already released, overwrite the same `-lsN`); `[skip ci]` makes GitHub skip the push event. |
-| `Update package versions [skip ci]` | `package-check commit`, after every successful live release whose amd64 table differs from the committed one | No. The release is already out; the control plane's release check knows the file, and `next-tag` looks through the commit. |
+| `Update package versions [skip ci]` | `package-check commit`, after every successful live release whose amd64 table differs from the committed one, and after a package check that found the committed table stale under an unchanged image | No. The release is already out; the control plane's release check knows the file, and `next-tag` looks through the commit. |
 
 ## Modes, namespaces, tags
 

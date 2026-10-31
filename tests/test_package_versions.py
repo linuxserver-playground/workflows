@@ -28,6 +28,50 @@ def test_compare_unchanged_changed_missing():
     assert missing == {"changed": True, "status": "missing", "fresh": pv.digest(TABLE), "committed": "none"}
 
 
+def test_decide_consults_the_previous_release_when_the_committed_table_does_not_match():
+    jenkins = "NAME VERSION TYPE\nbash 5.2.37 apk\njq 1.7.1 apk\n"  # the same packages, another pipeline's layout
+    # The branch's table is stale but the image is the previous release's: no release, catch the branch up.
+    stale = pv.decide(TABLE, jenkins, TABLE)
+    assert stale["changed"] is False and stale["status"] == "released" and stale["catch_up"] is True
+    assert stale["previous"]["status"] == "same" and stale["committed"] == pv.digest(jenkins)
+    missing = pv.decide(TABLE, None, TABLE)
+    assert missing["changed"] is False and missing["status"] == "released" and missing["catch_up"] is True
+    # A real package change since the previous release releases, whatever the committed table says.
+    moved = pv.decide(TABLE.replace("1.7.1", "1.8.0"), jenkins, TABLE)
+    assert moved["changed"] is True and moved["status"] == "different" and moved["catch_up"] is False
+    assert moved["previous"]["status"] == "different"
+    # A committed table that matches never looks further; no previous release leaves the committed verdict.
+    same = pv.decide(TABLE, TABLE, "anything")
+    assert same["status"] == "same" and same["previous"] is None and same["catch_up"] is False
+    first = pv.decide(TABLE, None, None)
+    assert first["status"] == "missing" and first["changed"] is True and first["catch_up"] is False
+
+
+def test_compare_cli_catches_up_a_stale_table_from_the_previous_release(tmp_path, monkeypatch, capsys):
+    fresh = tmp_path / "package_versions.amd64.txt"
+    fresh.write_text(TABLE)
+    committed = tmp_path / "package_versions.txt"
+    committed.write_text("NAME VERSION TYPE\nbash 5.2.37 apk\njq 1.7.1 apk\n")
+    fetched = []
+    monkeypatch.setattr(pv, "fetch", lambda url, timeout=30: fetched.append(url) or TABLE)
+    url = "https://github.com/o/docker-x/releases/download/1.2.3-ls4/package_versions.amd64.txt"
+    assert pv.main(["compare", "--fresh", str(fresh), "--committed", str(committed), "--previous-amd64-url", url]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["changed"] is False and out["status"] == "released" and out["catch_up"] is True and fetched == [url]
+    # A matching committed table never fetches the asset.
+    committed.write_text(TABLE)
+    fetched.clear()
+    assert pv.main(["compare", "--fresh", str(fresh), "--committed", str(committed), "--previous-amd64-url", url]) == 0
+    assert json.loads(capsys.readouterr().out)["status"] == "same" and fetched == []
+    # An unreadable asset leaves the committed table's verdict: a changed table releases.
+    committed.write_text("other\n")
+    monkeypatch.setattr(pv, "fetch", lambda url, timeout=30: None)
+    assert pv.main(["compare", "--fresh", str(fresh), "--committed", str(committed), "--previous-amd64-url", url]) == 0
+    out = json.loads(capsys.readouterr().out)
+    assert out["changed"] is True and out["status"] == "different" and out["catch_up"] is False
+    assert out["previous"]["status"] == "unavailable"
+
+
 def test_compare_cli_reports_arm64_against_previous_release(tmp_path, monkeypatch, capsys):
     fresh = tmp_path / "package_versions.amd64.txt"
     fresh.write_text(TABLE)

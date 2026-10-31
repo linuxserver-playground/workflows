@@ -1,5 +1,5 @@
 name: package-check
-description: The package table steps of a live build. `compare` (reason=packages, before publishing) compares the fresh amd64 package table with the committed package_versions.txt at the built commit and says whether the run should release; `commit` (after every successful release) commits the fresh table to the live branch as "Update package versions [skip ci]" when it differs. Neither dispatches a build.
+description: The package table steps of a live build. `compare` (reason=packages, before publishing) compares the fresh amd64 package table with the committed package_versions.txt at the built commit, and when that differs with the previous release's asset, and says whether the run should release; `commit` (after every successful release, and after a compare that only found the branch's table stale) commits the fresh table to the live branch as "Update package versions [skip ci]" when it differs. Neither dispatches a build.
 
 inputs:
   mode:
@@ -25,11 +25,14 @@ inputs:
 
 outputs:
   changed:
-    description: "compare: true when the committed table differs from the fresh one (or is missing)"
+    description: "compare: true when a package changed: the committed table differs from the fresh one (or is missing) and so does the previous release's"
     value: ${{ steps.check.outputs.changed }}
   status:
-    description: "compare: same, different or missing"
+    description: "compare: same, different, missing or released (the committed table is stale but the previous release's matches)"
     value: ${{ steps.check.outputs.status }}
+  catch_up:
+    description: "compare: true when nothing changed since the previous release and only the branch's file needs committing"
+    value: ${{ steps.check.outputs.catch_up }}
   fresh_hash:
     value: ${{ steps.check.outputs.fresh_hash }}
   committed_hash:
