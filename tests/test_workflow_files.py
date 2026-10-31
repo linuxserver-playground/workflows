@@ -56,7 +56,7 @@ def test_image_build_contract():
     assert arch["runs-on"] == "${{ matrix.runner }}"
     publish = wf["jobs"]["publish"]
     assert publish["if"] == "${{ always() && " + NOT_PAGES + " && !(" + CLOSED_PR + ") }}"
-    assert publish["permissions"] == {"contents": "write", "actions": "write", "packages": "write", "pull-requests": "write", "id-token": "write", "attestations": "write", "pages": "write"}
+    assert publish["permissions"] == {"contents": "write", "packages": "write", "pull-requests": "write", "id-token": "write", "attestations": "write", "pages": "write"}
     used = {s.get("uses", "") for job in wf["jobs"].values() for s in job["steps"]}
     for a in EXPECTED_ACTIONS:
         assert any(u.endswith(f"/.github/actions/{a}") for u in used), a
@@ -75,19 +75,33 @@ def test_arch_jobs_push_to_staging_and_publish_creates_from_it():
     assert build["with"]["staging_ref"] == "${{ fromJSON(needs.prepare.outputs.staging_refs)[matrix.arch] }}"
     publish = _steps(wf, "publish")
     assert publish["manifest"]["with"]["sources"] == "${{ needs.prepare.outputs.staging_refs }}"
-    # Nothing consumer-visible is written before the result is known or during a package check.
+    # Nothing consumer-visible is written before the gate said so: a green build that pushes images and is not a
+    # package check that found no change.
     for step in ("manifest", "Attest provenance (live)", "release"):
-        cond = publish[step]["if"]
-        assert "steps.result.outputs.result == 'success'" in cond and "env.PACKAGE_CHECK != 'true'" in cond, step
+        assert "steps.gate.outputs.release == 'true'" in publish[step]["if"], step
+    gate = publish["gate"]["run"]
+    assert 'if [[ "${PACKAGE_CHECK}" == "true" && "${CHANGED}" != "true" ]]; then skip=true; fi' in gate
+    assert 'if [[ "${RESULT}" == "success" && "${PUSH}" == "true" && "${skip}" == "false" ]]; then release=true; fi' in gate
+    assert publish["gate"]["env"]["CHANGED"] == "${{ steps.compare.outputs.changed }}"
 
 
-def test_package_check_is_a_check_not_a_release():
+def test_package_check_is_one_build_that_releases_only_on_a_change():
+    """reason=packages compares before publishing and releases from the same run; every live release commits
+    the table afterwards with [skip ci]. No dispatch, no second build (Jenkins' Update-packages had one)."""
     wf = load(ROOT / ".github" / "workflows" / "image-build.yml")
     assert wf["jobs"]["prepare"]["outputs"]["package_check"] == "${{ inputs.reason == 'packages' && steps.manifest.outputs.mode == 'live' && steps.manifest.outputs.push_images == 'true' }}"
+    # A package check that finds changes gets a new -lsN even though HEAD is the released commit plus its table commit.
+    assert _steps(wf, "prepare")["next"]["with"]["fresh"] == "${{ inputs.reason == 'packages' }}"
     publish = _steps(wf, "publish")
-    assert publish["packages"]["if"] == "steps.result.outputs.result == 'success' && env.PACKAGE_CHECK == 'true'"
-    assert publish["packages"]["with"]["sha"] == "${{ needs.prepare.outputs.checkout_sha }}"
+    assert publish["compare"]["if"] == "steps.result.outputs.result == 'success' && env.PACKAGE_CHECK == 'true'"
+    assert publish["compare"]["with"]["mode"] == "compare" and publish["compare"]["with"]["sha"] == "${{ needs.prepare.outputs.checkout_sha }}"
     assert publish["repo"]["with"]["persist-credentials"] is True
+    assert publish["repo"]["if"] == "steps.result.outputs.result == 'success' && env.PUSH == 'true' && env.MODE == 'live'"
+    table = publish["table"]
+    assert table["if"] == "steps.release.outcome == 'success'" and table["continue-on-error"] is True
+    assert table["with"]["mode"] == "commit" and table["with"]["branch"] == "${{ needs.prepare.outputs.release_branch }}"
+    text = (ROOT / ".github" / "workflows" / "image-build.yml").read_text()
+    assert "gh workflow run" not in text and "actions: write" not in text
     # The control plane and the summary see the folded outcome; an unchanged check reports skipped.
     assert 'result="skipped"' in publish["outcome"]["run"]
     # Any failed step of the job itself (a bundle download, say) makes the summary a failure of "publish".
@@ -242,7 +256,7 @@ def test_pages_deploys_after_a_live_release_and_alone_for_reason_pages():
     publish = wf["jobs"]["publish"]
     # Only a run that can release enters the environment; the others get an empty name, which is none.
     env = publish["environment"]["name"]
-    assert "needs.prepare.outputs.mode == 'live'" in env and "package_check != 'true'" in env and env.endswith("&& 'github-pages' || '' }}")
+    assert "needs.prepare.outputs.mode == 'live'" in env and "push_images == 'true'" in env and env.endswith("&& 'github-pages' || '' }}")
     steps = _steps(wf, "publish")
     names = [s.get("name") for s in publish["steps"]]
     # Pages before the event to control (CONVENTIONS §10): when the hub lists the build its page's files are served,
@@ -302,4 +316,5 @@ def test_cheap_network_steps_get_a_second_attempt(workflow: str) -> None:
         assert attempts[1]["if"] == "steps.first.outcome == 'failure'"
     publish = _steps(wf, "publish")
     if workflow == "image-build.yml":
-        assert publish["outcome"]["env"]["REPO"] == "${{ steps.repo.outcome == 'failure' && steps.repo_retry.outcome || steps.repo.outcome }}"
+        # A failed checkout only matters to the package comparison, which fails on its own; the outcome reads that.
+        assert publish["outcome"]["env"]["COMPARE"] == "${{ steps.compare.outcome }}"

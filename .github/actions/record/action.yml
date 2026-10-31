@@ -76,10 +76,19 @@ runs:
         retry gh release download "${PREVIOUS_TAG}" -R "${REPOSITORY}" -D "${dir}" -p record.json --clobber 2>/dev/null \
           || retry gh release download "${PREVIOUS_TAG}" -R "${REPOSITORY}" -D "${dir}" -p 'packages.*.json.gz' --clobber \
           || true
+        # The commits between the two builds, for the record's diff: who moved the repository and what they touched.
+        # GitHub lists up to 250 commits and 300 files; the record marks a longer range as truncated.
+        old=$(jq -r '.commit // ""' "${dir}/build.json")
+        new=$(jq -r '.commit // ""' "${OUT_DIR}/build.json")
+        if [[ -n "${old}" && -n "${new}" && "${old}" != "${new}" ]]; then
+          retry gh api "repos/${REPOSITORY}/compare/${old}...${new}?per_page=250" > "${dir}/compare.json" \
+            || { rm -f "${dir}/compare.json"; echo "::warning::could not read the commits between ${old:0:7} and ${new:0:7}; the record lists none"; }
+        fi
         echo "dir=${dir}" >> "${GITHUB_OUTPUT}"
       env:
         PREVIOUS_TAG: ${{ inputs.previous_tag }}
         REPOSITORY: ${{ inputs.repository }}
+        OUT_DIR: ${{ inputs.out_dir }}
         GH_TOKEN: ${{ inputs.github_token }}
       continue-on-error: true
 

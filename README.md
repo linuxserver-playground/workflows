@@ -32,7 +32,7 @@ are the control plane's job.
 flowchart LR
   P[prepare<br/>manifest · resolve-version · next-tag<br/>render or check · shellcheck · s6 bits<br/>tag set · staging refs] --> A1[arch amd64<br/>free-disk · build-arch → build/ staging · test-arch]
   P --> A2[arch arm64<br/>free-disk · build-arch → build/ staging · test-arch]
-  A1 --> U[publish<br/>publish-manifest from staging · emit-bundle · record<br/>release or package-check · pages · notify-control]
+  A1 --> U[publish<br/>package-check compare · publish-manifest from staging · emit-bundle · record<br/>release · package-check commit · pages · notify-control]
   A2 --> U
   G[pages<br/>reason=pages only: deploy the Pages site]
   U -. workflow_run .-> R[pr-report.yml, trusted<br/>report comment · fork image after approval<br/>delete untrusted-pr/… pr-N-* on close]
@@ -77,7 +77,7 @@ screenshots and tests first, then runtime, package changes against the release b
 branch's newest, log tails; it never fails the build), then the build details collapsed. Steps write their
 notes to `LSIO_SUMMARY` (`summary` in `lib.sh`, `gha.summary`): a file the Publish job puts under the
 report, and the log in every other job. With `reason: packages` on a live
-branch the publish and release steps are replaced by `package-check` (below).
+branch `package-check` compares first and the publish and release steps run only on a change (below).
 
 ### Pull requests: the trusted half
 
@@ -114,30 +114,31 @@ branch's workflow, and no job in it checks out, builds or runs pull request code
 | --- | --- | --- | --- |
 | `push` | the caller's default for `push` events | normal build and release | dev or pr build |
 | `upstream` | control plane (`repository_dispatch`) or `workflow_dispatch` after a new upstream version | normal build and release | dev build |
-| `packages` | control plane's weekly package check or `workflow_dispatch` | build and test, then **compare, never release** (below) | plain dev build; nothing is compared |
-| `rebuild` | control plane or `workflow_dispatch` (base image change, bad release) | normal build and release; same `-lsN` when HEAD is already released | dev build |
+| `packages` | control plane's weekly package check or `workflow_dispatch` | build and test, then **compare; release only on a change**, with a new `-lsN` (below) | plain dev build; nothing is compared |
+| `rebuild` | control plane's release check (a head without a release) or `workflow_dispatch` (base image change, bad release) | normal build and release; same `-lsN` when HEAD is already released | dev build |
 | `manual` | `workflow_dispatch` default | normal build and release | dev build |
 | `pages` | `workflow_dispatch` or `repository_dispatch` (filling or repairing a site) | **deploy the Pages site only** (below) | the same: the site is the repository's, whatever the ref |
 | `pull_request` | derived: every pr-mode build reports this whatever the input | n/a | pr build |
 
-**`packages` on a live branch** (Jenkins parity with the `Update-packages` stage): prepare, build and test run
-as normal because the fresh image is needed to know its packages. Then `package-check` compares the fresh
-`package_versions.amd64.txt` with the committed `package_versions.txt` (the amd64 table) at the built commit,
-by md5 with trailing whitespace normalised, and compares arm64 against the previous release's
+**`packages` on a live branch** (what Jenkins' `Update-packages` stage did, in one build instead of two): prepare,
+build and test run as normal because the fresh image is needed to know its packages. Then `package-check compare`
+compares the fresh `package_versions.amd64.txt` with the committed `package_versions.txt` (the amd64 table) at the
+built commit, by md5 with trailing whitespace normalised, and compares arm64 against the previous release's
 `package_versions.arm64.txt` asset for reporting only.
 
 - Unchanged: nothing is published or released; the bundle is a workflow artifact only; `build.summary` says
   `result: skipped` (no `failed_job`); the job summary says "packages unchanged"; the run succeeds.
-- Changed, or no `package_versions.txt` in the repo yet: the fresh amd64 table is committed to the live
-  branch as `Update package versions` (fetch, rebase, push, retried), and the check run then dispatches the
-  normal release build for the branch with `workflow_dispatch` (a push made with the workflow token never
-  triggers workflows, so the dispatch is explicit; the caller grants `actions: write` for it). The check run
-  itself publishes and releases nothing and reports `result: success`. The follow-up build runs on the new
-  HEAD, which no release tag points at, so it gets `-ls<N+1>`. A push that still fails after the retries
-  fails the run; a failed dispatch is a warning (the control plane's next check catches up).
+- Changed, or no `package_versions.txt` in the repo yet: the run publishes and releases like any other build.
+  `next-tag` runs with `fresh`, so the release is `-ls<N+1>` even though HEAD is the released commit (plus its
+  table commit, which `next-tag` looks through): a package check never overwrites the released tag.
 
-On a normal live release the committed `package_versions.txt` may lag the image: the release build does not
-commit it, only the next package check does. The authoritative table of a release is its
+**Every successful live release** then runs `package-check commit`: the fresh amd64 table goes onto the live
+branch as `Update package versions [skip ci]` when the branch's table differs (fetch, rebase, push, retried).
+No build follows: the control plane's release check counts a head that differs from the released commit only in
+`package_versions.txt` (and the generated files) as released, and `next-tag` reads the tags of the commit under
+it, so a rebuild from there republishes the same `-lsN`. A push that still fails after the retries is a warning,
+not a failure: the release is out, and the next one commits the table. The committed table therefore never lags
+the released image by more than a failed push; the authoritative table of a release is still its
 `package_versions.<arch>.txt` asset.
 
 ### Pages
@@ -171,7 +172,7 @@ lands last holds both releases; a repository without Pages is not retried.
   outcome as `pages`: `deployed` (`page_url` set), `failed` (attempted, nothing deployed: control re-dispatches
   `reason: pages`) or `skipped` (no release). The deploy (about a minute, up to three more with the retries) is
   the release path's only added wait. deploy-pages wants a job in the `github-pages` environment, so the Publish job enters
-  it, but only on a run that can release (live, pushing, not a package check): every other run gets an empty
+  it, but only on a run that can release (live, pushing): every other run gets an empty
   environment name, which is none, and leaves no deployment behind. A step, not a job: every job waits for one of
   the 20 runner slots on its own, and the release path takes no extra wait.
 - **`reason: pages`** runs only the job `pages` (prepare, arch and publish are skipped): no build, release,
@@ -188,7 +189,7 @@ The workflow makes exactly two kinds of commit on live branches (CONVENTIONS §8
 | Subject | Made by | Starts a build? |
 | --- | --- | --- |
 | `Update generated files [skip ci]` | prepare, after `builder render` changed README, AGENTS.md, LICENSE or the caller workflow | No. The run that made it continues on it, so another run would only rebuild the same tree (and, when HEAD was already released, overwrite the same `-lsN`); `[skip ci]` makes GitHub skip the push event. |
-| `Update package versions` | `package-check`, when the package table changed | Yes, deliberately: that build is the release. |
+| `Update package versions [skip ci]` | `package-check commit`, after every successful live release whose amd64 table differs from the committed one | No. The release is already out; the control plane's release check knows the file, and `next-tag` looks through the commit. |
 
 ## Modes, namespaces, tags
 
@@ -274,8 +275,8 @@ pull requests when `GITHUB_TOKEN` may not).
 
 The caller subscribes to `pull_request` with `types: [opened, synchronize, reopened]`; closing is
 `pr-report.yml`'s business. The control plane triggers builds with `repository_dispatch`
-(`types: [build]`, `client_payload.reason`) or `workflow_dispatch`. Of the two commits the workflow makes,
-`Update generated files [skip ci]` never starts another run and `Update package versions` is meant to.
+(`types: [build]`, `client_payload.reason`) or `workflow_dispatch`. Neither of the two commits the workflow
+makes (`Update generated files [skip ci]`, `Update package versions [skip ci]`) starts another run.
 
 ### Version sources
 

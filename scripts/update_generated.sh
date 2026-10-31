@@ -18,9 +18,9 @@
 # The commit subject ends in "[skip ci]": the run that made the commit continues on it, so a second
 # run of the same workflow for that push would only build the same tree again (and, when HEAD was
 # already released, overwrite the same -lsN). GitHub skips push-triggered workflows for commits whose
-# message carries [skip ci]. The other bot commit, "Update package versions" (package-check), is
-# deliberately made without it because that push is what starts the release build. Outputs:
-# checkout_sha (the commit the arch jobs must build) and generated_updated (true|false).
+# message carries [skip ci]. The other bot commit, "Update package versions [skip ci]" (package-check,
+# after a release), carries it for the same reason. Outputs: checkout_sha (the commit the arch jobs
+# must build) and generated_updated (true|false).
 set -euo pipefail
 # shellcheck source=lib.sh
 source "$(dirname "${BASH_SOURCE[0]}")/lib.sh"

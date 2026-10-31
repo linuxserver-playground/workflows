@@ -6,10 +6,12 @@ name: Image build
 #
 # Arch jobs push to staging references (ghcr.io/<owner>/build/<name>:<arch>-<sha7>-<run id>) and the
 # publish job creates the released tags from them, so a failing run never overwrites a released tag.
-# reason=packages on a live branch is a check, not a release: it compares the fresh package table with
-# the committed package_versions.txt and commits the new one when it changed; that push starts the
-# release build. The pull request report, publishing a fork's image and deleting a closed pull request's
-# images are the trusted half, pr-report.yml: nothing here posts to pull requests.
+# reason=packages on a live branch compares the fresh package table with the committed package_versions.txt
+# before anything is published and releases only when it changed, with a new -lsN; one build, never a
+# second. Every successful live release then commits the fresh table as "Update package versions [skip ci]",
+# so the committed table never lags the released image and no build follows the commit. The pull request
+# report, publishing a fork's image and deleting a closed pull request's images are the trusted half,
+# pr-report.yml: nothing here posts to pull requests.
 # Every live release also deploys the repository's Pages site, the newest builds' heavy files assembled from the
 # Releases (CONVENTIONS §6, "Repo Pages"); reason=pages does only that, in the one job `pages`, and nothing else.
 
@@ -102,7 +104,7 @@ jobs:
       build_date: ${{ steps.tags.outputs.build_date }}
       staging_path: ${{ steps.tags.outputs.staging_path }}
       staging_refs: ${{ steps.tags.outputs.staging_refs }}
-      # reason=packages on a live branch with pushes enabled: build and test, compare, never release.
+      # reason=packages on a live branch with pushes enabled: build and test, compare, release only on a change.
       package_check: ${{ inputs.reason == 'packages' && steps.manifest.outputs.mode == 'live' && steps.manifest.outputs.push_images == 'true' }}
     steps:
       - name: Check out repository
@@ -173,6 +175,9 @@ jobs:
           branch: ${{ steps.manifest.outputs.release_branch }}
           release_tag: ${{ steps.manifest.outputs.release_tag }}
           other_tags: ${{ steps.manifest.outputs.other_tags }}
+          # A package check that finds changes releases a new -lsN: HEAD is the released commit plus the table
+          # commit of that release, which next-tag otherwise reads as already released (a rebuild republishes).
+          fresh: ${{ inputs.reason == 'packages' }}
 
       - name: Update generated files (live)
         id: generated_live
@@ -256,7 +261,7 @@ jobs:
             echo "| commit | \`${SHA}\` |"
             echo "| push images | \`${PUSH}\` |"
             echo "| staging | \`${STAGING}\` |"
-            [[ "${PACKAGE_CHECK}" == "true" ]] && echo "| package check | yes: compare and commit, no publish or release |"
+            [[ "${PACKAGE_CHECK}" == "true" ]] && echo "| package check | yes: compare before publishing, release only on a change |"
             true
           } >> "${LSIO_SUMMARY}"
         env:
@@ -415,16 +420,16 @@ jobs:
     runs-on: ubuntu-24.04
     permissions:
       contents: write
-      actions: write  # the package check dispatches the follow-up release build
       packages: write
       pull-requests: write
       id-token: write
       attestations: write
       pages: write  # the Pages deploy of a live release
     # deploy-pages deploys from a job in the github-pages environment. Only a run that can release enters it, so
-    # pull request, dev and package check runs leave no deployments there; an empty name is no environment.
+    # pull request and dev runs leave no deployments there; an empty name is no environment. (A package check that
+    # finds nothing enters it and deploys nothing.)
     environment:
-      name: ${{ needs.prepare.outputs.mode == 'live' && needs.prepare.outputs.push_images == 'true' && needs.prepare.outputs.package_check != 'true' && 'github-pages' || '' }}
+      name: ${{ needs.prepare.outputs.mode == 'live' && needs.prepare.outputs.push_images == 'true' && 'github-pages' || '' }}
     env:
       MODE: ${{ needs.prepare.outputs.mode }}
       PUSH: ${{ needs.prepare.outputs.push_images }}
@@ -502,11 +507,64 @@ jobs:
         if: steps.result.outputs.result == 'success' && env.PUSH == 'true'
         uses: docker/setup-buildx-action@v4
 
+      # ---- The live repository, for the package table: compared before publishing (reason=packages), committed
+      # after the release (every live release). ----
+      - name: Check out repository (live)
+        continue-on-error: true  # a second attempt follows; the clone is GitHub's to fail
+        id: repo
+        if: steps.result.outputs.result == 'success' && env.PUSH == 'true' && env.MODE == 'live'
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.release_branch }}
+          path: repo
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Check out repository (live) (retry)
+        id: repo_retry
+        if: steps.repo.outcome == 'failure' && (steps.result.outputs.result == 'success' && env.PUSH == 'true' && env.MODE == 'live')
+        uses: actions/checkout@v5
+        with:
+          ref: ${{ needs.prepare.outputs.release_branch }}
+          path: repo
+          fetch-depth: 0
+          persist-credentials: true
+
+      - name: Compare package table (reason=packages)
+        id: compare
+        # The weekly package check: the fresh amd64 table against the committed one at the built commit. Unchanged
+        # means this run publishes and releases nothing; changed means it releases like any other build.
+        if: steps.result.outputs.result == 'success' && env.PACKAGE_CHECK == 'true'
+        uses: ./.lsio-workflows/.github/actions/package-check
+        with:
+          mode: compare
+          out_dir: out
+          repo_dir: repo
+          sha: ${{ needs.prepare.outputs.checkout_sha }}
+          previous_tag: ${{ needs.prepare.outputs.previous_tag }}
+
+      - name: Decide whether this run publishes
+        id: gate
+        # skip: a package check that found no change (the run ends "skipped"). release: a green build that pushes
+        # images and is not skipped; live ones also release.
+        run: |
+          set -euo pipefail
+          skip=false
+          if [[ "${PACKAGE_CHECK}" == "true" && "${CHANGED}" != "true" ]]; then skip=true; fi
+          release=false
+          if [[ "${RESULT}" == "success" && "${PUSH}" == "true" && "${skip}" == "false" ]]; then release=true; fi
+          echo "skip=${skip}" >> "${GITHUB_OUTPUT}"
+          echo "release=${release}" >> "${GITHUB_OUTPUT}"
+          echo "skip=${skip} release=${release}"
+        env:
+          RESULT: ${{ steps.result.outputs.result }}
+          CHANGED: ${{ steps.compare.outputs.changed }}
+
       - name: Publish tags
         id: manifest
         # The released tags come into existence here, from the staging references, and only once every
-        # arch has built and passed its tests. A package check never publishes.
-        if: steps.result.outputs.result == 'success' && env.PUSH == 'true' && env.PACKAGE_CHECK != 'true'
+        # arch has built and passed its tests. A package check that found no change publishes nothing.
+        if: steps.gate.outputs.release == 'true'
         uses: ./.lsio-workflows/.github/actions/publish-manifest
         with:
           image_path: ${{ needs.prepare.outputs.image_path }}
@@ -518,7 +576,7 @@ jobs:
           sbom_dir: out
 
       - name: Attest provenance (live)
-        if: steps.result.outputs.result == 'success' && env.PUSH == 'true' && env.MODE == 'live' && env.PACKAGE_CHECK != 'true'
+        if: steps.gate.outputs.release == 'true' && env.MODE == 'live'
         uses: actions/attest-build-provenance@v4
         continue-on-error: true
         with:
@@ -552,7 +610,7 @@ jobs:
         # are at hand (CONVENTIONS §6): the hub ingests the release from build.json and this file alone. About a
         # minute (most of it grype), and never a reason to fail the build.
         id: record
-        if: steps.bundle.outcome == 'success' && env.PACKAGE_CHECK != 'true'
+        if: steps.bundle.outcome == 'success' && steps.gate.outputs.skip != 'true'
         uses: ./.lsio-workflows/.github/actions/record
         with:
           out_dir: out
@@ -560,7 +618,7 @@ jobs:
 
       - name: Release (live)
         id: release
-        if: steps.result.outputs.result == 'success' && env.PUSH == 'true' && env.MODE == 'live' && env.PACKAGE_CHECK != 'true'
+        if: steps.gate.outputs.release == 'true' && env.MODE == 'live'
         uses: ./.lsio-workflows/.github/actions/release
         with:
           tag: ${{ needs.prepare.outputs.primary_tag }}
@@ -576,54 +634,37 @@ jobs:
           site_url: ${{ vars.SITE_URL }}
           image_name: ${{ needs.prepare.outputs.name }}
 
-      # ---- reason=packages (live): compare, commit on change, never publish or release ----
-      - name: Check out repository (package check)
-        continue-on-error: true  # a second attempt follows; the clone is GitHub's to fail
-        id: repo
-        if: steps.result.outputs.result == 'success' && env.PACKAGE_CHECK == 'true'
-        uses: actions/checkout@v5
-        with:
-          ref: ${{ needs.prepare.outputs.release_branch }}
-          path: repo
-          fetch-depth: 0
-          persist-credentials: true
-
-      - name: Check out repository (package check) (retry)
-        id: repo_retry
-        if: steps.repo.outcome == 'failure' && (steps.result.outputs.result == 'success' && env.PACKAGE_CHECK == 'true')
-        uses: actions/checkout@v5
-        with:
-          ref: ${{ needs.prepare.outputs.release_branch }}
-          path: repo
-          fetch-depth: 0
-          persist-credentials: true
-
-      - name: Package check
-        id: packages
-        if: steps.result.outputs.result == 'success' && env.PACKAGE_CHECK == 'true'
+      - name: Commit package table (live)
+        id: table
+        # The amd64 table of the image just released, onto the live branch as "Update package versions [skip ci]"
+        # when it differs. No build follows (the control plane's release check knows the file); a failed push only
+        # warns, the next release commits it. Jenkins did this in a second build; this is the same table from the
+        # same run.
+        if: steps.release.outcome == 'success'
+        continue-on-error: true
         uses: ./.lsio-workflows/.github/actions/package-check
         with:
+          mode: commit
           out_dir: out
           repo_dir: repo
-          sha: ${{ needs.prepare.outputs.checkout_sha }}
           branch: ${{ needs.prepare.outputs.release_branch }}
-          previous_tag: ${{ needs.prepare.outputs.previous_tag }}
 
       - name: Publish outcome
         id: outcome
         if: always()
         # Fold the publish job's own steps into the result the control plane and the summary see:
-        # a failed publish, release or package commit is a failure of job "publish"; a package check
-        # that found nothing to do is "skipped". JOB_STATUS covers every other step of this job: when the
-        # bundle download failed, the named steps were skipped, not failed, and the summary once said
-        # success for a job that was red (docker-grocy, 2026-10-30).
+        # a failed publish, release or package comparison is a failure of job "publish"; a package check
+        # that found nothing to do is "skipped". The table commit after the release never fails the run.
+        # JOB_STATUS covers every other step of this job: when the bundle download failed, the named steps
+        # were skipped, not failed, and the summary once said success for a job that was red (docker-grocy,
+        # 2026-10-30).
         run: |
           set -euo pipefail
           result="${RESULT}"; failed_job="${FAILED_JOB}"
           if [[ "${result}" == "success" ]]; then
-            if [[ "${MANIFEST}" == "failure" || "${RELEASE}" == "failure" || "${REPO}" == "failure" || "${PACKAGES}" == "failure" || "${JOB_STATUS}" != "success" ]]; then
+            if [[ "${MANIFEST}" == "failure" || "${RELEASE}" == "failure" || "${COMPARE}" == "failure" || "${JOB_STATUS}" != "success" ]]; then
               result="failure"; failed_job="publish"
-            elif [[ "${PACKAGE_CHECK}" == "true" && "${CHANGED}" != "true" ]]; then
+            elif [[ "${SKIP}" == "true" ]]; then
               result="skipped"
             fi
           fi
@@ -635,9 +676,8 @@ jobs:
           FAILED_JOB: ${{ steps.result.outputs.failed_job }}
           MANIFEST: ${{ steps.manifest.outcome }}
           RELEASE: ${{ steps.release.outcome }}
-          REPO: ${{ steps.repo.outcome == 'failure' && steps.repo_retry.outcome || steps.repo.outcome }}
-          PACKAGES: ${{ steps.packages.outcome }}
-          CHANGED: ${{ steps.packages.outputs.changed }}
+          COMPARE: ${{ steps.compare.outcome }}
+          SKIP: ${{ steps.gate.outputs.skip }}
           JOB_STATUS: ${{ job.status }}
 
       - name: Upload bundle
@@ -706,11 +746,22 @@ jobs:
             echo "<details><summary>Build details</summary>"
             echo
             if [[ "${PACKAGE_CHECK}" == "true" ]]; then
-              if [[ "${CHANGED}" == "true" ]]; then
-                echo "Package check: packages changed, release build triggered by commit \`${COMMIT_SHA}\`"
+              if [[ "${SKIP}" == "true" ]]; then
+                echo "Package check: packages unchanged, nothing published"
               else
-                echo "Package check: packages unchanged"
+                echo "Package check: packages changed, released from this run"
               fi
+              echo
+            fi
+            if [[ "${TABLE}" == "success" ]]; then
+              if [[ "${COMMITTED}" == "true" ]]; then
+                echo "Package table: committed as \`${COMMIT_SHA}\` (\`[skip ci]\`, no build follows)"
+              else
+                echo "Package table: already up to date on the branch"
+              fi
+              echo
+            elif [[ "${TABLE}" == "failure" ]]; then
+              echo "Package table: could not be committed (see the step's warning); the next release commits it"
               echo
             fi
             if [[ -n "${RELEASE_URL}" ]]; then echo "Release: ${RELEASE_URL}"; echo; fi
@@ -739,8 +790,10 @@ jobs:
           PAGES_URL: ${{ steps.pages.outputs.page_url }}
           ARTIFACT_URL: ${{ steps.artifact.outputs.artifact-url }}
           STAGING: ${{ needs.prepare.outputs.staging_refs }}
-          CHANGED: ${{ steps.packages.outputs.changed }}
-          COMMIT_SHA: ${{ steps.packages.outputs.commit_sha }}
+          SKIP: ${{ steps.gate.outputs.skip }}
+          TABLE: ${{ steps.table.outcome }}
+          COMMITTED: ${{ steps.table.outputs.committed }}
+          COMMIT_SHA: ${{ steps.table.outputs.commit_sha }}
           GH_TOKEN: ${{ github.token }}
           ATTACHMENTS_TOKEN: ${{ secrets.ATTACHMENTS_TOKEN }}
           IMAGE_NAME: ${{ needs.prepare.outputs.name }}

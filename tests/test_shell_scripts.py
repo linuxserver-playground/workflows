@@ -1,6 +1,6 @@
 """The bash scripts, run for real with a stubbed docker on PATH and bare git remotes in tmp_path:
 publish.sh (the imagetools command list from staging sources), update_generated.sh (the [skip ci]
-subject) and package_check.sh (compare, commit, rebase, push)."""
+subject) and package_check.sh (compare before publishing; commit with [skip ci] after the release)."""
 
 from __future__ import annotations
 
@@ -220,69 +220,98 @@ def test_check_fails_when_a_pull_request_edits_generated_files(env, tmp_path):
 PACKAGE_CHECK = ROOT / ".github" / "actions" / "package-check" / "package_check.sh"
 TABLE = "NAME   VERSION  TYPE\nbash   5.2.37   apk\n"
 NEW_TABLE = TABLE.replace("5.2.37", "5.2.38")
+TABLE_SUBJECT = "Update package versions [skip ci]"
 
 
-def package_check(env: dict, tmp_path: Path, clone: Path, fresh: str, **extra: str) -> subprocess.CompletedProcess:
+def package_check(env: dict, tmp_path: Path, clone: Path, fresh: str, mode: str = "compare", **extra: str) -> subprocess.CompletedProcess:
     out = tmp_path / "out"
     out.mkdir(exist_ok=True)
     (out / "package_versions.amd64.txt").write_text(fresh)
     e = {"OUT_DIR": str(out), "REPO_DIR": str(clone), "SHA": git("rev-parse", "HEAD", cwd=clone), "BRANCH": "main", "REPOSITORY": "o/docker-example", "PUSH_DELAY": "0", **extra}
-    return run(PACKAGE_CHECK, env, extra=e)
+    return run(PACKAGE_CHECK, env, mode, extra=e)
 
 
-def test_package_check_unchanged_commits_nothing(env, tmp_path):
+def test_package_compare_unchanged_says_so_and_touches_nothing(env, tmp_path):
     origin, clone = make_remote(tmp_path, {"package_versions.txt": TABLE})
     proc = package_check(env, tmp_path, clone, TABLE.replace("\n", "   \n"))  # trailing whitespace only
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert outputs(env)["changed"] == "false" and outputs(env)["commit_sha"] == ""
+    out = outputs(env)
+    assert out["changed"] == "false" and out["status"] == "same"
     assert git("log", "--format=%s", cwd=origin) == "Initial"
     assert "packages unchanged" in Path(env["GITHUB_STEP_SUMMARY"]).read_text()
 
 
-def test_package_check_changed_commits_and_dispatches_the_release_build(env, tmp_path):
+def test_package_compare_changed_lets_the_run_release_and_commits_nothing_itself(env, tmp_path):
     origin, clone = make_remote(tmp_path, {"package_versions.txt": TABLE})
-    extra = gh_env(env, tmp_path)
-    proc = package_check(env, tmp_path, clone, NEW_TABLE, **extra)
+    proc = package_check(env, tmp_path, clone, NEW_TABLE)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     out = outputs(env)
-    assert out["changed"] == "true"
-    assert git("log", "-1", "--format=%s", cwd=origin) == "Update package versions"
-    assert git("rev-parse", "main", cwd=origin) == out["commit_sha"]
-    assert git("show", "main:package_versions.txt", cwd=origin) == NEW_TABLE.rstrip("\n")
-    # A workflow-token push never triggers workflows, so the release build is dispatched explicitly.
-    assert "workflow run build.yml --repo o/docker-example --ref main -f reason=rebuild" in Path(extra["GH_LOG"]).read_text()
-    summary = Path(env["GITHUB_STEP_SUMMARY"]).read_text()
-    assert f"committed as `{out['commit_sha']}`" in summary and "release build dispatched" in summary
+    assert out["changed"] == "true" and out["status"] == "different"
+    # The comparison decides; the commit is a separate step after the release.
+    assert git("log", "--format=%s", cwd=origin) == "Initial"
+    assert "This run releases" in Path(env["GITHUB_STEP_SUMMARY"]).read_text()
 
 
-def test_package_check_seeds_a_missing_file(env, tmp_path):
+def test_package_compare_treats_a_missing_file_as_changed(env, tmp_path):
     origin, clone = make_remote(tmp_path, {"README.md": "# x\n"})
     proc = package_check(env, tmp_path, clone, TABLE)
     assert proc.returncode == 0, proc.stdout + proc.stderr
     assert outputs(env)["changed"] == "true" and outputs(env)["committed_hash"] == "none"
+    assert outputs(env)["status"] == "missing"
+
+
+def test_package_commit_writes_the_table_with_skip_ci(env, tmp_path):
+    origin, clone = make_remote(tmp_path, {"package_versions.txt": TABLE})
+    proc = package_check(env, tmp_path, clone, NEW_TABLE, mode="commit")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    out = outputs(env)
+    assert out["committed"] == "true"
+    assert git("log", "-1", "--format=%s", cwd=origin) == TABLE_SUBJECT
+    assert git("rev-parse", "main", cwd=origin) == out["commit_sha"]
+    assert git("show", "main:package_versions.txt", cwd=origin) == NEW_TABLE.rstrip("\n")
+    # No dispatch: the commit starts no build.
+    assert "workflow run" not in proc.stdout
+    summary = Path(env["GITHUB_STEP_SUMMARY"]).read_text()
+    assert f"committed to `main` as `{out['commit_sha']}`" in summary and "no build follows" in summary
+
+
+def test_package_commit_seeds_a_missing_file(env, tmp_path):
+    origin, clone = make_remote(tmp_path, {"README.md": "# x\n"})
+    proc = package_check(env, tmp_path, clone, TABLE, mode="commit")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert outputs(env)["committed"] == "true"
     assert git("show", "main:package_versions.txt", cwd=origin) == TABLE.rstrip("\n")
 
 
-def test_package_check_rebases_over_a_concurrent_commit(env, tmp_path):
+def test_package_commit_does_nothing_when_the_branch_already_has_the_table(env, tmp_path):
+    origin, clone = make_remote(tmp_path, {"package_versions.txt": TABLE})
+    proc = package_check(env, tmp_path, clone, TABLE, mode="commit")
+    assert proc.returncode == 0, proc.stdout + proc.stderr
+    assert outputs(env)["committed"] == "false" and outputs(env)["commit_sha"] == ""
+    assert git("log", "--format=%s", cwd=origin) == "Initial"
+    assert "already matches" in Path(env["GITHUB_STEP_SUMMARY"]).read_text()
+
+
+def test_package_commit_rebases_over_a_concurrent_commit(env, tmp_path):
     origin, clone = make_remote(tmp_path, {"package_versions.txt": TABLE, "README.md": "# x\n"})
     built_sha = git("rev-parse", "HEAD", cwd=clone)
     other = other_clone(origin, tmp_path, "other")
     (other / "README.md").write_text("# y\n")
     git("commit", "--quiet", "-am", "Edit readme", cwd=other)
     git("push", "--quiet", "origin", "main", cwd=other)
-    proc = package_check(env, tmp_path, clone, NEW_TABLE)
+    proc = package_check(env, tmp_path, clone, NEW_TABLE, mode="commit")
     assert proc.returncode == 0, proc.stdout + proc.stderr
-    assert git("log", "--format=%s", cwd=origin).splitlines() == ["Update package versions", "Edit readme", "Initial"]
+    assert git("log", "--format=%s", cwd=origin).splitlines() == [TABLE_SUBJECT, "Edit readme", "Initial"]
     assert git("show", "main:README.md", cwd=origin) == "# y"
     assert outputs(env)["commit_sha"] != built_sha
 
 
-def test_package_check_fails_when_the_push_is_impossible(env, tmp_path):
+def test_package_commit_fails_when_the_push_is_impossible(env, tmp_path):
     origin, clone = make_remote(tmp_path, {"package_versions.txt": TABLE})
     shutil.rmtree(origin)  # the remote is gone: fetch and push fail every time
-    proc = package_check(env, tmp_path, clone, NEW_TABLE, PUSH_ATTEMPTS="2")
+    proc = package_check(env, tmp_path, clone, NEW_TABLE, mode="commit", PUSH_ATTEMPTS="2")
     assert proc.returncode != 0
-    assert "could not push Update package versions" in proc.stdout
+    assert outputs(env).get("committed") == "false"
 
 
 # -------------------------------------------------------------------------------------------- create_release.sh

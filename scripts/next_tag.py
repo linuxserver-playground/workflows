@@ -7,7 +7,7 @@ branch's latest GitHub Release tag, never from a registry. The tag shape is
 ``[T-]<upstream>-ls<N>`` where T is the branch's release tag (absent when T is ``latest``).
 
     python3 next_tag.py --repo owner/docker-foo --branch master --release-tag latest \
-        [--other-tags develop,nightly] [--head-sha <sha>] [--head-tags tag1,tag2]
+        [--other-tags develop,nightly] [--head-tags tag1,tag2] [--fresh]
 
 Prints JSON: {"ls_build": N, "previous_tag": "...", "previous_ls_build": M,
 "previous_release_url": "...", "head_already_released": bool, "diff_base": "..."}. `diff_base` is the newest
@@ -146,9 +146,32 @@ def pick(
     }
 
 
-def head_tags_from_git() -> list[str]:
-    proc = subprocess.run(["git", "tag", "--points-at", "HEAD"], capture_output=True, text=True, check=False)
-    return [t for t in proc.stdout.split() if t] if proc.returncode == 0 else []
+BOT_SUBJECTS = ("Update package versions", "Update generated files")
+"""The pipeline's own commits (CONVENTIONS §8). Neither changes what the image is built from: the package table is
+written after a release, the generated files before the build of the run that made them. A head reached from a
+released commit through nothing but these is that released commit for the build number."""
+
+
+def own_commit(subject: str) -> bool:
+    return subject.startswith(BOT_SUBJECTS) and "[skip ci]" in subject
+
+
+def head_tags_from_git(limit: int = 50) -> list[str]:
+    """Tags on HEAD, and on the ancestors HEAD reaches through the pipeline's own `[skip ci]` commits only."""
+    proc = subprocess.run(
+        ["git", "log", f"-n{limit}", "--format=%H%x1f%s", "HEAD"], capture_output=True, text=True, check=False
+    )
+    if proc.returncode != 0:
+        return []
+    tags: list[str] = []
+    for line in proc.stdout.splitlines():
+        sha, _, subject = line.partition("\x1f")
+        at = subprocess.run(["git", "tag", "--points-at", sha], capture_output=True, text=True, check=False)
+        if at.returncode == 0:
+            tags += [t for t in at.stdout.split() if t and t not in tags]
+        if not own_commit(subject):
+            break
+    return tags
 
 
 def main(argv: list[str]) -> int:
@@ -158,6 +181,11 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--release-tag", required=True)
     ap.add_argument("--other-tags", default="", help="comma separated tags of the other live branches")
     ap.add_argument("--head-tags", default=None, help="comma separated tags pointing at HEAD (default: git)")
+    ap.add_argument(
+        "--fresh",
+        action="store_true",
+        help="a new build number whatever points at HEAD (a package check that found changes never republishes)",
+    )
     ap.add_argument("--releases-json", default=None, help="read releases from this file instead of gh (tests)")
     ap.add_argument("--no-siblings", action="store_true", help="do not read the other branches' image.yml (tests)")
     args = ap.parse_args(argv)
@@ -167,7 +195,7 @@ def main(argv: list[str]) -> int:
             releases = json.load(fh)
     else:
         releases = list_releases(args.repo)
-    head_tags = args.head_tags.split(",") if args.head_tags is not None else head_tags_from_git()
+    head_tags = [] if args.fresh else (args.head_tags.split(",") if args.head_tags is not None else head_tags_from_git())
     other = [t.strip() for t in args.other_tags.split(",") if t.strip()]
     if args.release_tag == "latest" and not args.no_siblings:
         other += [t for t in live_sibling_tags(args.repo, args.branch) if t not in other]

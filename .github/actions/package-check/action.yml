@@ -1,7 +1,10 @@
 name: package-check
-description: The reason=packages check of a live build. Compare the fresh amd64 package table with the committed package_versions.txt and, when it changed, commit the new table to the live branch then dispatch the release build for the branch (a workflow-token push does not trigger workflows). Never publishes or releases.
+description: The package table steps of a live build. `compare` (reason=packages, before publishing) compares the fresh amd64 package table with the committed package_versions.txt at the built commit and says whether the run should release; `commit` (after every successful release) commits the fresh table to the live branch as "Update package versions [skip ci]" when it differs. Neither dispatches a build.
 
 inputs:
+  mode:
+    description: compare or commit
+    required: true
   out_dir:
     description: Directory holding the merged bundle-<arch> artifacts (package_versions.<arch>.txt)
     required: true
@@ -9,44 +12,47 @@ inputs:
     description: Checkout of the image repository on the live branch, with push credentials
     required: true
   sha:
-    description: The commit that was built; package_versions.txt is read from it
-    required: true
+    description: compare only; the commit that was built; package_versions.txt is read from it
+    default: ""
   branch:
-    description: The live branch to commit to
-    required: true
+    description: commit only; the live branch to commit to
+    default: ""
   previous_tag:
-    description: Previous release tag of the branch; its package_versions.arm64.txt asset is compared for reporting
+    description: compare only; previous release tag of the branch; its package_versions.arm64.txt asset is compared for reporting
     default: ""
   repository:
     default: ${{ github.repository }}
-  github_token:
-    description: Token with contents and actions write, for the commit and the workflow_dispatch
-    default: ${{ github.token }}
 
 outputs:
   changed:
-    description: "true when the committed table differs from the fresh one (or is missing) and a commit was pushed"
+    description: "compare: true when the committed table differs from the fresh one (or is missing)"
     value: ${{ steps.check.outputs.changed }}
-  commit_sha:
-    description: The Update package versions commit, when one was pushed
-    value: ${{ steps.check.outputs.commit_sha }}
+  status:
+    description: "compare: same, different or missing"
+    value: ${{ steps.check.outputs.status }}
   fresh_hash:
     value: ${{ steps.check.outputs.fresh_hash }}
   committed_hash:
     value: ${{ steps.check.outputs.committed_hash }}
+  committed:
+    description: "commit: true when a commit was pushed"
+    value: ${{ steps.check.outputs.committed }}
+  commit_sha:
+    description: "commit: the Update package versions commit, when one was pushed"
+    value: ${{ steps.check.outputs.commit_sha }}
 
 runs:
   using: composite
   steps:
-    - name: Compare package versions
+    - name: Package table (${{ inputs.mode }})
       id: check
       shell: bash
-      run: ${GITHUB_ACTION_PATH}/package_check.sh
+      run: ${GITHUB_ACTION_PATH}/package_check.sh "${MODE}"
       env:
+        MODE: ${{ inputs.mode }}
         OUT_DIR: ${{ inputs.out_dir }}
         REPO_DIR: ${{ inputs.repo_dir }}
         SHA: ${{ inputs.sha }}
         BRANCH: ${{ inputs.branch }}
         PREVIOUS_TAG: ${{ inputs.previous_tag }}
         REPOSITORY: ${{ inputs.repository }}
-        GH_TOKEN: ${{ inputs.github_token }}

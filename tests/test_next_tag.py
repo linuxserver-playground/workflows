@@ -84,19 +84,51 @@ def test_tag_pattern_shapes():
     assert next_tag.matches_branch("1.2.3", "latest", []) is None
 
 
-def test_package_change_commit_moves_head_so_the_follow_up_build_gets_n_plus_one():
-    """A package check that finds changes commits 'Update package versions' and never releases. The
-    push starts a normal build on the new HEAD, which no release tag points at, so it is N+1 even
-    though the previous HEAD had already been released as N."""
+def test_a_package_check_that_finds_changes_releases_a_new_number_from_the_released_head():
+    """The weekly check runs on the released commit (or on it plus the table commit of that release, which
+    head_tags_from_git looks through). With --fresh the head tags are ignored, so it releases N+1 instead
+    of republishing N; the record then diffs against N."""
     rels = releases()
-    # The weekly check runs on the released commit: HEAD carries 4.0.20.3014-ls2, so a release from
-    # here would be ls2 again (a rebuild). The check does not release.
-    check = next_tag.pick(rels, "latest", "master", other_tags=["develop"], head_tags=["4.0.20.3014-ls2"])
-    assert check["ls_build"] == 2 and check["head_already_released"] is True
-    # The follow-up build runs on the package commit, which has no tag.
-    follow_up = next_tag.pick(rels, "latest", "master", other_tags=["develop"], head_tags=[])
-    assert follow_up["ls_build"] == 3 and follow_up["previous_tag"] == "4.0.20.3014-ls2"
-    assert follow_up["head_already_released"] is False
+    plain = next_tag.pick(rels, "latest", "master", other_tags=["develop"], head_tags=["4.0.20.3014-ls2"])
+    assert plain["ls_build"] == 2 and plain["head_already_released"] is True
+    fresh = next_tag.pick(rels, "latest", "master", other_tags=["develop"], head_tags=[])
+    assert fresh["ls_build"] == 3 and fresh["previous_tag"] == "4.0.20.3014-ls2"
+    assert fresh["head_already_released"] is False and fresh["diff_base"] == "4.0.20.3014-ls2"
+
+
+def test_head_tags_look_through_the_pipelines_own_commits(tmp_path):
+    """A released commit, then the table commit its release made: a rebuild from there is a rebuild of the
+    released commit. A human commit, [skip ci] or not, ends the walk."""
+    import os
+    import subprocess
+
+    env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@x", "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@x", "GIT_CONFIG_GLOBAL": "/dev/null", "GIT_CONFIG_NOSYSTEM": "1"}
+
+    def git(*args: str) -> str:
+        return subprocess.run(["git", *args], cwd=tmp_path, env=env, capture_output=True, text=True, check=True).stdout.strip()
+
+    def commit(subject: str) -> None:
+        (tmp_path / "f").write_text(subject)
+        git("add", "f")
+        git("commit", "-q", "-m", subject)
+
+    git("init", "-q", "-b", "main")
+    commit("Initial")
+    git("tag", "1.0.0-ls1")
+    commit("Update package versions [skip ci]")
+    commit("Update generated files [skip ci]")
+    git("tag", "docs-only")  # a tag on an own commit counts too
+    cwd = os.getcwd()
+    os.chdir(tmp_path)
+    try:
+        assert next_tag.head_tags_from_git() == ["docs-only", "1.0.0-ls1"]
+        commit("Fix the service script [skip ci]")  # a person's commit: the walk stops here
+        assert next_tag.head_tags_from_git() == []
+        commit("Update package versions")  # without [skip ci] it is not the pipeline's
+        git("tag", "1.0.1-ls2")
+        assert next_tag.head_tags_from_git() == ["1.0.1-ls2"]
+    finally:
+        os.chdir(cwd)
 
 
 def fake_gh(files: dict[str, str | None]):
