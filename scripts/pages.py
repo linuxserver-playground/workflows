@@ -11,6 +11,11 @@ builder package is installed by the action. Nothing is committed anywhere: every
 and reads the Releases, so the last deploy is complete whatever an earlier one missed.
 
     python3 pages.py assemble --out <dir> [--repo owner/repo] [--keep 5] [--site-url URL]
+    python3 pages.py check --out <dir> [--repo owner/repo] [--keep 5]
+
+`check` runs after a deploy and says whether the site just deployed is already behind the Releases (`stale`). A deploy
+replaces the whole site, so when two branches release together, the one that assembled first and deployed last would
+remove the other's build. Whichever deploys last checks after every other deploy, so it sees every release they made.
 
 A branch is live when its own image.yml names it in `release.branch`. A release belongs to the branch its
 `target_commitish` names; a release with a sha target to the branch whose release tag prefixes its tag (longest
@@ -173,6 +178,19 @@ def select(releases: list[Json], live: dict[str, str], default: str, keep: int =
         for release in sorted(items, key=_published, reverse=True)[:keep]
     ]
     return sorted(chosen, key=lambda br: _published(br[1]), reverse=True)
+
+
+def behind(index: Json, selected: list[tuple[str, Json]]) -> list[str]:
+    """
+    The tags of the live branches' newest releases that the assembled site does not serve as they are now. Only the
+    newest counts: `_trim` may leave out older builds on purpose, never a branch's newest, and a release made after
+    the assembly is its branch's newest. The date catches a tag republished by a rebuild of a released head.
+    """
+    served = {b.get("tag"): b.get("published_at") for b in index.get("builds") or []}
+    newest: dict[str, Json] = {}
+    for branch, release in selected:  # newest first, as select() returns them
+        newest.setdefault(branch, release)
+    return sorted(str(r["tag_name"]) for r in newest.values() if served.get(r["tag_name"]) != _published(r))
 
 
 def _member_path(member: tarfile.TarInfo) -> str | None:
@@ -524,9 +542,21 @@ def main(argv: list[str]) -> int:
         default=os.environ.get("SITE_URL") or "",
         help="the website's root, which the documents link (default https://<owner>.github.io/site/)",
     )
+    c = sub.add_parser("check", help="say whether the site assembled in --out is behind the repository's Releases")
+    c.add_argument("--out", required=True, type=Path)
+    c.add_argument("--repo", default=os.environ.get("GITHUB_REPOSITORY", ""))
+    c.add_argument("--keep", type=int, default=KEEP)
     args = ap.parse_args(argv)
     if not re.fullmatch(r"[\w.-]+/[\w.-]+", args.repo):
         ap.error("--repo owner/repo is required")
+
+    if args.command == "check":
+        default, texts = read_branches(args.repo)
+        selected = select(list_releases(args.repo), live_branches(default, texts), default, args.keep)
+        missing = behind(json.loads((args.out / "index.json").read_text(encoding="utf-8")), selected)
+        print(f"released since this site was assembled: {', '.join(missing)}" if missing else "the site is up to date")
+        gha.set_outputs({"stale": "true" if missing else "false", "missing": " ".join(missing)})
+        return 0
 
     from builder.derive.registry import base_layers  # noqa: PLC0415 - installed by the action
 

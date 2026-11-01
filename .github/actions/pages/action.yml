@@ -58,12 +58,25 @@ runs:
       uses: actions/deploy-pages@v5
       continue-on-error: true
 
-    # ---- retries: wait, assemble again (a release made meanwhile is included), deploy ----
+    # A deploy replaces the whole site. Another branch that released while this one assembled may have deployed first,
+    # and this deploy has then removed its build, so look again: the last deploy to finish sees every other release.
+    - name: Check the site against the Releases
+      id: check
+      if: steps.deploy.outcome == 'success'
+      shell: bash
+      run: python3 "${GITHUB_ACTION_PATH}/../../../scripts/pages.py" check --repo "${REPOSITORY}" --keep "${KEEP}" --out "${RUNNER_TEMP}/lsio-pages"
+      env:
+        REPOSITORY: ${{ inputs.repository }}
+        KEEP: ${{ inputs.keep }}
+        GH_TOKEN: ${{ inputs.github_token }}
+      continue-on-error: true
+
+    # ---- again after a refused deploy (wait for the one in progress) or a stale site (at once): assemble, deploy ----
     - name: Wait before the second deploy
       id: wait2
-      if: steps.upload.outcome == 'success' && steps.deploy.outcome == 'failure'
+      if: steps.upload.outcome == 'success' && (steps.deploy.outcome == 'failure' || steps.check.outputs.stale == 'true')
       shell: bash
-      run: bash "${GITHUB_ACTION_PATH}/wait.sh" 60
+      run: bash "${GITHUB_ACTION_PATH}/wait.sh" "${{ steps.deploy.outcome == 'failure' && '60' || '0' }}"
       env:
         REPOSITORY: ${{ inputs.repository }}
         GH_TOKEN: ${{ inputs.github_token }}
@@ -103,11 +116,22 @@ runs:
         artifact_name: github-pages-2
       continue-on-error: true
 
+    - name: Check the site against the Releases again
+      id: check2
+      if: steps.deploy2.outcome == 'success'
+      shell: bash
+      run: python3 "${GITHUB_ACTION_PATH}/../../../scripts/pages.py" check --repo "${REPOSITORY}" --keep "${KEEP}" --out "${RUNNER_TEMP}/lsio-pages"
+      env:
+        REPOSITORY: ${{ inputs.repository }}
+        KEEP: ${{ inputs.keep }}
+        GH_TOKEN: ${{ inputs.github_token }}
+      continue-on-error: true
+
     - name: Wait before the last deploy
       id: wait3
-      if: steps.upload2.outcome == 'success' && steps.deploy2.outcome == 'failure'
+      if: steps.upload2.outcome == 'success' && (steps.deploy2.outcome == 'failure' || steps.check2.outputs.stale == 'true')
       shell: bash
-      run: bash "${GITHUB_ACTION_PATH}/wait.sh" 120
+      run: bash "${GITHUB_ACTION_PATH}/wait.sh" "${{ steps.deploy2.outcome == 'failure' && '120' || '0' }}"
       env:
         REPOSITORY: ${{ inputs.repository }}
         GH_TOKEN: ${{ inputs.github_token }}
@@ -147,6 +171,17 @@ runs:
         artifact_name: github-pages-3
       continue-on-error: true
 
+    - name: Check the site against the Releases a last time
+      id: check3
+      if: steps.deploy3.outcome == 'success'
+      shell: bash
+      run: python3 "${GITHUB_ACTION_PATH}/../../../scripts/pages.py" check --repo "${REPOSITORY}" --keep "${KEEP}" --out "${RUNNER_TEMP}/lsio-pages"
+      env:
+        REPOSITORY: ${{ inputs.repository }}
+        KEEP: ${{ inputs.keep }}
+        GH_TOKEN: ${{ inputs.github_token }}
+      continue-on-error: true
+
     - name: Pages result
       id: result
       shell: bash
@@ -161,7 +196,12 @@ runs:
           exit 1
         fi
         echo "Pages deployed: ${url}"
+        if [[ "${STALE3}" == "true" ]]; then
+          warn "Pages is still behind after three deploys (${MISSING3}); the next release or a reason=pages run repairs it"
+        fi
       env:
+        STALE3: ${{ steps.check3.outputs.stale }}
+        MISSING3: ${{ steps.check3.outputs.missing }}
         URL1: ${{ steps.deploy.outputs.page_url }}
         URL2: ${{ steps.deploy2.outputs.page_url }}
         URL3: ${{ steps.deploy3.outputs.page_url }}

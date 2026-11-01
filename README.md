@@ -169,9 +169,13 @@ documents link the website at `SITE_URL` (the org variable; the `site_url` input
 already, as the Publish job does from `emit-bundle`) and assembles the site from the repository's Releases into an empty directory (`scripts/pages.py`:
 one GraphQL query for the branches and their `image.yml`, the release list, then the assets from their download
 URLs, which cost no REST quota), uploads it with `actions/upload-pages-artifact` and deploys it with
-`actions/deploy-pages`. A deploy refused because another is in progress (two branches of one repository
-released together) is retried after 60 and 120 seconds, each time from a fresh assembly, so the deploy that
-lands last holds both releases; a repository without Pages is not retried.
+`actions/deploy-pages`. A deploy replaces the whole site, and two branches of one repository that release together
+can overlap without either being refused, so the one that assembled first and deployed last would remove the other's
+build. After every deploy `pages.py check` compares the site with the Releases (each live branch's newest, by tag and
+date) and, when one is missing, assembles and deploys again at once. The deploy that lands last checks after every
+other deploy, so it holds every release. A refused deploy is retried after 60 and 120 seconds, also from a fresh
+assembly. That is three deploys at most, with a warning if the site is still behind; a repository without Pages is
+not retried.
 
 - **After a live release**, as the Publish job's step `Pages (live)`, right after the Release and before the event
   to the control plane, with `continue-on-error`: it never fails the release, and a lost deploy is repaired by the

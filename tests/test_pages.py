@@ -9,6 +9,7 @@ import tarfile
 from pathlib import Path
 
 import pages
+import yaml
 
 REPO = "linuxserver-playground/docker-example"
 SHA = "0123456789abcdef0123456789abcdef01234567"
@@ -308,3 +309,52 @@ def test_a_release_without_a_readable_build_json_keeps_its_files_only(tmp_path: 
     releases = pages.Releases([rel], blobs.get, None)
     pages.assemble(tmp_path / "site", REPO, [("master", rel)], blobs.get, workers=1, releases=releases, site="x")
     assert sorted(p.name for p in (tmp_path / "site" / "builds" / "1.0-ls3").iterdir()) == ["packages.amd64.json.gz"]
+
+
+def built(*items: tuple[str, str]) -> dict:
+    return {"builds": [{"tag": tag, "published_at": published} for tag, published in items]}
+
+
+def test_behind_finds_another_branchs_release_made_after_the_assembly():
+    # docker-webtop, 2026-11-01: arch-kde assembled before fedora-kde released and deployed after it.
+    selected = [
+        ("develop", release("develop-1-ls2", "develop", "2026-11-01T18:11:59Z")),
+        ("master", release("1-ls2", "master", "2026-11-01T18:11:47Z")),
+        ("develop", release("develop-1-ls1", "develop", "2026-10-28T00:00:00Z")),
+    ]
+    site = built(("1-ls2", "2026-11-01T18:11:47Z"), ("develop-1-ls1", "2026-10-28T00:00:00Z"))
+    assert pages.behind(site, selected) == ["develop-1-ls2"]
+    site["builds"].append({"tag": "develop-1-ls2", "published_at": "2026-11-01T18:11:59Z"})
+    assert pages.behind(site, selected) == []
+
+
+def test_behind_finds_a_republished_tag_and_ignores_a_trimmed_older_build():
+    selected = [
+        ("master", release("1-ls2", "master", "2026-11-01T12:00:00Z")),
+        ("master", release("1-ls1", "master", "2026-10-01T00:00:00Z")),  # left out by _trim: not a reason to deploy
+    ]
+    assert pages.behind(built(("1-ls2", "2026-11-01T12:00:00Z")), selected) == []
+    assert pages.behind(built(("1-ls2", "2026-11-01T11:00:00Z")), selected) == ["1-ls2"]
+
+
+def test_check_writes_the_outputs_the_action_reads(tmp_path, monkeypatch):
+    out = tmp_path / "site"
+    out.mkdir()
+    (out / "index.json").write_text(json.dumps(built(("1-ls1", "2026-10-01T00:00:00Z"))))
+    outputs = tmp_path / "outputs"
+    monkeypatch.setenv("GITHUB_OUTPUT", str(outputs))
+    monkeypatch.setattr(pages, "read_branches", lambda repo: ("master", {"master": manifest("master", "latest")}))
+    monkeypatch.setattr(pages, "list_releases", lambda repo: [release("1-ls2", "master", "2026-11-01T00:00:00Z")])
+    assert pages.main(["check", "--repo", REPO, "--out", str(out)]) == 0
+    written = outputs.read_text()
+    assert "stale" in written and "true" in written and "missing" in written and "1-ls2" in written
+
+
+def test_the_action_redeploys_on_a_stale_site_at_once_and_on_a_refusal_after_a_wait():
+    action = yaml.safe_load((Path(__file__).parents[1] / ".github/actions/pages/action.yml").read_text())
+    steps = {s.get("id"): s for s in action["runs"]["steps"]}
+    for wait, deploy, check, seconds in (("wait2", "deploy", "check", "60"), ("wait3", "deploy2", "check2", "120")):
+        assert steps[check]["if"] == f"steps.{deploy}.outcome == 'success'"
+        assert f"steps.{check}.outputs.stale == 'true'" in steps[wait]["if"]
+        assert f"steps.{deploy}.outcome == 'failure' && '{seconds}' || '0'" in steps[wait]["run"]
+        assert steps[check]["continue-on-error"] is True  # a failed look must not cost the release its site

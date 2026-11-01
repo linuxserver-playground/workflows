@@ -699,7 +699,8 @@ jobs:
         # (CONVENTIONS §6, "Repo Pages"). Before the event to the control plane, which sends the hub its
         # image-released and holds its announcement until the build's page is live: that page reads the build's
         # screenshot, report files, file trees and vulns.json from here, so they are served by then, or the event says
-        # the deploy failed (`pages`). It never fails the release; a lost deploy is repaired by the next one, or by
+        # the deploy failed (`pages`). It never fails the release; a deploy that lost another branch's release assembles
+        # and deploys again; a lost deploy is repaired by the next one, or by
         # control re-dispatching reason=pages.
         id: pages
         if: ${{ !cancelled() && steps.release.outcome == 'success' }}
