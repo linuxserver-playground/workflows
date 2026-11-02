@@ -48,6 +48,8 @@ run_builder() {
     -v "${PWD}:/repo" \
     -e GITHUB_TOKEN="${GITHUB_TOKEN:-}" \
     -e GITHUB_REPOSITORY="${GITHUB_REPOSITORY:-}" \
+    -e BUILDER_SITE_URL="${BUILDER_SITE_URL:-}" \
+    -e BUILDER_HUB_URL="${BUILDER_HUB_URL:-}" \
     --user "$(id -u):$(id -g)" \
     "${builder_image}" "$@"
 }

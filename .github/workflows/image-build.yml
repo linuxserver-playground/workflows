@@ -52,6 +52,10 @@ env:
   # Where steps put their summary notes. The run page shows one summary box, the Publish job's: it opens with
   # the result and the build report, and the notes go under them. Every other job sends its notes to the log.
   LSIO_SUMMARY: /dev/stdout
+  # The site and hub that builder links in the generated files and the build data: the caller organisation's Actions
+  # variables (an empty one keeps builder's default). The org itself is the repository's owner.
+  BUILDER_SITE_URL: ${{ vars.SITE_URL }}
+  BUILDER_HUB_URL: ${{ vars.HUB_URL }}
 
 jobs:
   prepare:
