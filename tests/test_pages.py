@@ -358,3 +358,52 @@ def test_the_action_redeploys_on_a_stale_site_at_once_and_on_a_refusal_after_a_w
         assert f"steps.{check}.outputs.stale == 'true'" in steps[wait]["if"]
         assert f"steps.{deploy}.outcome == 'failure' && '{seconds}' || '0'" in steps[wait]["run"]
         assert steps[check]["continue-on-error"] is True  # a failed look must not cost the release its site
+
+
+def run_result(tmp_path: Path, **env: str):
+    """Run the action's `Pages result` step as Actions would, with the given step outcomes and outputs."""
+    import os
+    import subprocess
+
+    action_dir = Path(__file__).parents[1] / ".github/actions/pages"
+    action = yaml.safe_load((action_dir / "action.yml").read_text())
+    step = next(s for s in action["runs"]["steps"] if s.get("id") == "result")
+    outputs = tmp_path / "outputs"
+    outputs.write_text("")
+    names = ("STALE3", "MISSING3", "OUTCOME1", "OUTCOME2", "OUTCOME3", "URL1", "URL2", "URL3")
+    assert set(names) == set(step["env"])
+    full = {**os.environ, **{n: "" for n in names}, **env}
+    full.update(GITHUB_ACTION_PATH=str(action_dir), GITHUB_OUTPUT=str(outputs))
+    done = subprocess.run(["bash", "-c", step["run"]], env=full, capture_output=True, text=True)
+    return done.returncode, done.stdout, outputs.read_text()
+
+
+URL = "https://linuxserver-playground.github.io/docker-example/"
+
+
+def test_result_reports_no_deploy_when_every_deploy_timed_out_with_a_page_url(tmp_path):
+    # deploy-pages sets page_url before it waits, so three hung and cancelled deploys still carry one (docker-kicad).
+    code, out, written = run_result(
+        tmp_path, OUTCOME1="failure", OUTCOME2="failure", OUTCOME3="failure", URL1=URL, URL2=URL, URL3=URL
+    )
+    assert code == 1
+    assert "Pages was not deployed" in out
+    assert URL not in written
+
+
+def test_result_takes_the_deploy_that_succeeded(tmp_path):
+    code, out, written = run_result(tmp_path, OUTCOME1="failure", OUTCOME2="success", URL1=URL, URL2=URL)
+    assert code == 0
+    assert f"Pages deployed: {URL}" in out and "::warning::" not in out
+    assert URL in written
+
+
+def test_result_warns_when_a_later_redeploy_failed(tmp_path):
+    code, out, written = run_result(tmp_path, OUTCOME1="success", OUTCOME2="failure", URL1=URL, URL2=URL)
+    assert code == 0 and URL in written
+    assert "::warning::" in out and "redeploy" in out
+
+
+def test_result_fails_when_nothing_was_deployed(tmp_path):
+    code, out, written = run_result(tmp_path)
+    assert code == 1 and "Pages was not deployed" in out

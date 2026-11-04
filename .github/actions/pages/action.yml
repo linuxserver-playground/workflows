@@ -189,7 +189,20 @@ runs:
         set -euo pipefail
         # shellcheck source=../../../scripts/lib.sh
         source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
-        url="${URL1:-${URL2:-${URL3:-}}}"
+        # A deploy counts only by its outcome. deploy-pages sets page_url as soon as it creates the deployment, so a
+        # deploy that hung in updating_pages, timed out and was cancelled still has one (docker-kicad, 2026-11-04:
+        # three such deploys reported "deployed", and control never redeployed the stale site).
+        url=""
+        last=""
+        for i in 1 2 3; do
+          outcome_var="OUTCOME${i}" url_var="URL${i}"
+          outcome="${!outcome_var}"
+          [[ -n "${outcome}" && "${outcome}" != "skipped" ]] || continue
+          last="${outcome}"
+          if [[ "${outcome}" == "success" && -n "${!url_var}" ]]; then
+            url="${!url_var}"
+          fi
+        done
         set_output page_url "${url}"
         if [[ -z "${url}" ]]; then
           warn "Pages was not deployed; the site keeps its previous deploy until the next release or a reason=pages run"
@@ -198,10 +211,15 @@ runs:
         echo "Pages deployed: ${url}"
         if [[ "${STALE3}" == "true" ]]; then
           warn "Pages is still behind after three deploys (${MISSING3}); the next release or a reason=pages run repairs it"
+        elif [[ "${last}" != "success" ]]; then
+          warn "Pages deployed once, but the redeploy for another branch's release failed; the next release or a reason=pages run repairs it"
         fi
       env:
         STALE3: ${{ steps.check3.outputs.stale }}
         MISSING3: ${{ steps.check3.outputs.missing }}
+        OUTCOME1: ${{ steps.deploy.outcome }}
+        OUTCOME2: ${{ steps.deploy2.outcome }}
+        OUTCOME3: ${{ steps.deploy3.outcome }}
         URL1: ${{ steps.deploy.outputs.page_url }}
         URL2: ${{ steps.deploy2.outputs.page_url }}
         URL3: ${{ steps.deploy3.outputs.page_url }}
