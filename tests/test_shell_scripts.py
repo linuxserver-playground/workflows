@@ -440,6 +440,30 @@ def test_retry_ghcr_retries_rate_limits_and_returns_other_errors_at_once(env, tm
     assert _retry(env, tmp_path, "denied")[:2] == (0, 2)
 
 
+def test_retry_reads_the_whole_error_before_it_decides(env, tmp_path):
+    """stderr was teed through a process substitution nothing waited for: about one transient failure in twenty was
+    classified from an empty file and not retried (2026-11-04). Fifty in a row must all be retried."""
+    script = (
+        f'set -euo pipefail; source "{ROOT}/scripts/lib.sh"; missed=0\n'
+        'for i in $(seq 50); do\n'
+        f'  c="{tmp_path}/count.$i"; : > "$c"\n'
+        '  flaky() { echo x >> "$c"; if [[ $(wc -l < "$c") -le 1 ]]; then echo "toomanyrequests" >&2; return 1; fi; echo ok; }\n'
+        '  [[ "$(retry flaky 2>/dev/null || true)" == ok ]] || missed=$((missed + 1))\n'
+        'done\n'
+        'echo "missed=$missed"\n'
+    )
+    proc = subprocess.run(["bash", "-c", script], env=env, capture_output=True, text=True)
+    assert proc.stdout.strip() == "missed=0", proc.stderr
+
+
+def test_retry_passes_the_commands_exit_code_without_pipefail(env, tmp_path):
+    proc = subprocess.run(
+        ["bash", "-c", f'set -eu; source "{ROOT}/scripts/lib.sh"; out=$(retry bash -c "cat; exit 7" <<<in) || echo "rc=$? out=$out"'],
+        env=env, capture_output=True, text=True,
+    )
+    assert proc.stdout.strip() == "rc=7 out=in"
+
+
 def test_retry_ghcr_retries_the_extra_pattern_it_is_given(env, tmp_path):
     assert _retry(env, tmp_path, "Error response from daemon: manifest unknown", "manifest unknown")[:2] == (0, 2)
 

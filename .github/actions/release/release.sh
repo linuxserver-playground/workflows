@@ -24,7 +24,7 @@ exists=false
 # gh says "release not found" for a missing one, which retry returns at once.
 if retry gh release view "${TAG}" --repo "${REPOSITORY}" --json url >/dev/null 2>&1; then
   exists=true
-  notice "release ${TAG} already exists; assets will be re-uploaded with --clobber"
+  notice "release ${TAG} already exists; assets that differ will be replaced"
 fi
 
 # ---- Section 2: LinuxServer changes (GitHub generated notes) ----
@@ -84,7 +84,9 @@ for f in "${BUNDLE_DIR}"/packages.*.json.gz "${BUNDLE_DIR}"/layers.*.json "${BUN
          "${BUNDLE_DIR}"/record.json; do
   [[ -f "${f}" ]] && assets+=("${f}")
 done
-retry gh release upload "${TAG}" "${assets[@]}" --repo "${REPOSITORY}" --clobber
+# One file at a time, checked against the Release's own digests each round: a retried --clobber upload left
+# releases without some of their files when GitHub's asset API failed (2026-11-04).
+python3 "${scripts}/upload_assets.py" --repo "${REPOSITORY}" --tag "${TAG}" "${assets[@]}"
 endgroup
 
 release_url=$(retry gh release view "${TAG}" --repo "${REPOSITORY}" --json url --jq .url)

@@ -96,22 +96,17 @@ _retry_transient() {
 _retry_loop() {
   local max_attempts="$1" base_delay="$2" max_delay="$3" always="$4"
   shift 4
-  local attempt=1 errfile exit_code delay pause tee_pid
+  local attempt=1 errfile exit_code delay pause
   errfile=$(mktemp)
   while true; do
-    # Run inside an if so a caller's set -e cannot abort before we get to retry. stderr is teed into errfile so the
-    # classification can read it while the caller still sees it live.
-    if "$@" 2> >(tee "${errfile}" >&2); then
-      exit_code=0
-    else
-      exit_code=$?
-    fi
-    # Make sure tee has finished writing before we read the file. Under set -u, $! is unset when bash did not
-    # record the process substitution's pid, so guard it.
-    tee_pid="${!:-}"
-    if [[ -n "${tee_pid}" ]]; then
-      wait "${tee_pid}" 2>/dev/null || true
-    fi
+    # stderr is teed into errfile so the classification can read it while the caller still sees it live; stdout
+    # passes through fd 3 untouched. tee is in the pipeline, so it has written every line before the pipeline
+    # returns. It used to be a process substitution whose pid never reached $!, so nothing waited for it, and about
+    # one failure in twenty was classified from an empty file and returned at once (2026-11-04). PIPESTATUS, not the
+    # pipeline's status, so a caller without pipefail still gets the command's code; the `|| true` keeps a caller's
+    # set -e from aborting before we get to retry.
+    exit_code=0
+    { "$@" 2>&1 1>&3 3>&- | tee "${errfile}" >&2; exit_code=${PIPESTATUS[0]}; } 3>&1 || true
     if (( exit_code == 0 )); then
       rm -f "${errfile}"
       return 0
