@@ -105,12 +105,15 @@ def pick(
     """
     Choose the previous release of this branch and the next build number.
 
-    ``releases`` is the GitHub API list, newest first. Releases whose ``target_commitish`` names
-    another branch are ignored; a sha target is accepted when the tag shape matches.
+    ``releases`` is the GitHub API list. Releases whose ``target_commitish`` names another branch are ignored;
+    a sha target is accepted when the tag shape matches. The branch's releases are taken newest first by build
+    number, never in the API's order: GitHub does not list them newest first (it put python's
+    `ha-alpine324-3.14.9-ls1` before `ha-alpine324-3.14.10-ls2`), and a build that took the older one as the
+    previous release reused the newer one's tag and overwrote its release on every rebuild (2026-11-04).
     """
     other_tags = other_tags or []
     head_tags = set(head_tags or [])
-    found: list[tuple[str, int, str]] = []
+    candidates: list[tuple[str, int, str]] = []
     for rel in releases:
         if rel.get("draft"):
             continue
@@ -121,7 +124,11 @@ def pick(
         m = matches_branch(tag, release_tag, other_tags)
         if not m:
             continue
-        found.append((tag, int(m.group("n")), rel.get("html_url") or ""))
+        candidates.append((tag, int(m.group("n")), rel.get("html_url") or ""))
+    candidates.sort(key=lambda c: c[1], reverse=True)
+    found: list[tuple[str, int, str]] = []
+    for tag, n, url in candidates:
+        found.append((tag, n, url))
         # The previous release decides the build number; the diff needs the newest one that is not this commit
         # (a rebuild of a released head republishes its tag), so keep looking once past a head tag.
         if tag not in head_tags:

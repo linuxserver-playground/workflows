@@ -41,6 +41,20 @@ def test_diff_base_is_the_previous_release_for_a_new_commit():
     assert out["diff_base"] == out["previous_tag"]
 
 
+def test_build_number_orders_releases_not_the_api():
+    # GitHub listed python's ha releases ls1 before ls2; trusting that order reused ls2's tag on every rebuild.
+    def rel(tag: str) -> dict:
+        return {"tag_name": tag, "target_commitish": "ha", "html_url": f"https://example/{tag}"}
+
+    listed = [rel("ha-alpine324-3.14.9-ls1"), rel("ha-alpine324-3.14.10-ls2")]
+    out = next_tag.pick(listed, "ha", "ha")
+    assert out["previous_tag"] == "ha-alpine324-3.14.10-ls2"
+    assert out["ls_build"] == 3
+    rebuilt = next_tag.pick(listed, "ha", "ha", head_tags=["ha-alpine324-3.14.10-ls2"])
+    assert rebuilt["ls_build"] == 2 and rebuilt["head_already_released"] is True
+    assert rebuilt["diff_base"] == "ha-alpine324-3.14.9-ls1"
+
+
 def test_no_releases_starts_at_one():
     out = next_tag.pick([], "latest", "master")
     assert out == {
@@ -166,7 +180,7 @@ def test_unadvertised_branch_releases_are_not_claimed_by_latest(monkeypatch, tmp
     monkeypatch.setattr(next_tag, "gh", gh)
     releases = tmp_path / "releases.json"
     releases.write_text(json.dumps([
-        {"tag_name": "romm-1.0-ls1", "target_commitish": "a" * 40},
+        {"tag_name": "romm-1.0-ls9", "target_commitish": "a" * 40},
         {"tag_name": "2.5.0-ls7", "target_commitish": "b" * 40},
     ]))
     args = ["--repo", "o/docker-webstation", "--branch", "master", "--release-tag", "latest", "--other-tags", "latest", "--head-tags", "", "--releases-json", str(releases)]
@@ -174,7 +188,7 @@ def test_unadvertised_branch_releases_are_not_claimed_by_latest(monkeypatch, tmp
     assert json.loads(capsys.readouterr().out)["previous_tag"] == "2.5.0-ls7"
     # Without the siblings master would have taken romm's release for its own.
     assert next_tag.main([*args, "--no-siblings"]) == 0
-    assert json.loads(capsys.readouterr().out)["previous_tag"] == "romm-1.0-ls1"
+    assert json.loads(capsys.readouterr().out)["previous_tag"] == "romm-1.0-ls9"
 
 
 def test_prefixed_branches_do_not_look_for_siblings(monkeypatch, capsys):
