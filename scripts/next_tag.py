@@ -7,11 +7,15 @@ branch's latest GitHub Release tag, never from a registry. The tag shape is
 ``[T-]<upstream>-ls<N>`` where T is the branch's release tag (absent when T is ``latest``).
 
     python3 next_tag.py --repo owner/docker-foo --branch master --release-tag latest \
-        [--other-tags develop,nightly] [--head-tags tag1,tag2] [--fresh]
+        [--other-tags develop,nightly] [--head-tags tag1,tag2] [--upstream 1.2.3] [--fresh]
 
 Prints JSON: {"ls_build": N, "previous_tag": "...", "previous_ls_build": M,
 "previous_release_url": "...", "head_already_released": bool, "diff_base": "..."}. `diff_base` is the newest
 release of the branch not made from this commit: what the build's record.json diffs against.
+
+HEAD counts as already released only through a tag of the same upstream version (``--upstream``, the resolved
+``upstream_clean``): a rebuild of that commit for that version republishes the tag, and any other version is a new
+release with the next N, whichever way the version moved.
 
 Releases are read with ``gh api --paginate`` (retried on network failures, scripts/netretry.py); ``pick`` is pure and unit-tested with fixtures.
 
@@ -101,6 +105,7 @@ def pick(
     branch: str,
     other_tags: list[str] | None = None,
     head_tags: list[str] | None = None,
+    upstream: str | None = None,
 ) -> dict[str, Any]:
     """
     Choose the previous release of this branch and the next build number.
@@ -113,7 +118,12 @@ def pick(
     """
     other_tags = other_tags or []
     head_tags = set(head_tags or [])
-    candidates: list[tuple[str, int, str]] = []
+    released_here = {
+        t
+        for t in head_tags
+        if upstream is None or ((m := matches_branch(t, release_tag, other_tags)) and m.group("upstream") == upstream)
+    }
+    candidates: list[tuple[str, int, str, str]] = []
     for rel in releases:
         if rel.get("draft"):
             continue
@@ -124,10 +134,11 @@ def pick(
         m = matches_branch(tag, release_tag, other_tags)
         if not m:
             continue
-        candidates.append((tag, int(m.group("n")), rel.get("html_url") or ""))
-    candidates.sort(key=lambda c: c[1], reverse=True)
+        candidates.append((tag, int(m.group("n")), rel.get("html_url") or "", rel.get("published_at") or ""))
+    # Newest first: the build number, then the publish date between releases that share one.
+    candidates.sort(key=lambda c: (c[1], c[3]), reverse=True)
     found: list[tuple[str, int, str]] = []
-    for tag, n, url in candidates:
+    for tag, n, url, _ in candidates:
         found.append((tag, n, url))
         # The previous release decides the build number; the diff needs the newest one that is not this commit
         # (a rebuild of a released head republishes its tag), so keep looking once past a head tag.
@@ -143,12 +154,13 @@ def pick(
             "diff_base": "",
         }
     tag, previous_n, url = found[0]
+    republish = tag in released_here
     return {
-        "ls_build": previous_n if tag in head_tags else previous_n + 1,
+        "ls_build": previous_n if republish else previous_n + 1,
         "previous_tag": tag,
         "previous_ls_build": previous_n,
         "previous_release_url": url,
-        "head_already_released": tag in head_tags,
+        "head_already_released": republish,
         "diff_base": next((t for t, _, _ in found if t not in head_tags), ""),
     }
 
@@ -188,6 +200,7 @@ def main(argv: list[str]) -> int:
     ap.add_argument("--release-tag", required=True)
     ap.add_argument("--other-tags", default="", help="comma separated tags of the other live branches")
     ap.add_argument("--head-tags", default=None, help="comma separated tags pointing at HEAD (default: git)")
+    ap.add_argument("--upstream", default=None, help="the resolved upstream version (upstream_clean)")
     ap.add_argument(
         "--fresh",
         action="store_true",
@@ -202,11 +215,13 @@ def main(argv: list[str]) -> int:
             releases = json.load(fh)
     else:
         releases = list_releases(args.repo)
-    head_tags = [] if args.fresh else (args.head_tags.split(",") if args.head_tags is not None else head_tags_from_git())
+    head_tags = (
+        [] if args.fresh else (args.head_tags.split(",") if args.head_tags is not None else head_tags_from_git())
+    )
     other = [t.strip() for t in args.other_tags.split(",") if t.strip()]
     if args.release_tag == "latest" and not args.no_siblings:
         other += [t for t in live_sibling_tags(args.repo, args.branch) if t not in other]
-    print(json.dumps(pick(releases, args.release_tag, args.branch, other, head_tags)))
+    print(json.dumps(pick(releases, args.release_tag, args.branch, other, head_tags, args.upstream or None)))
     return 0
 
 

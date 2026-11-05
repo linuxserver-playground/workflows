@@ -115,7 +115,7 @@ branch's workflow, and no job in it checks out, builds or runs pull request code
 | `push` | the caller's default for `push` events | normal build and release | dev or pr build |
 | `upstream` | control plane (`repository_dispatch`) or `workflow_dispatch` after a new upstream version | normal build and release | dev build |
 | `packages` | control plane's weekly package check or `workflow_dispatch` | build and test, then **compare; release only on a change**, with a new `-lsN` (below) | plain dev build; nothing is compared |
-| `rebuild` | control plane's release check (a head without a release) or `workflow_dispatch` (base image change, bad release) | normal build and release; same `-lsN` when HEAD is already released | dev build |
+| `rebuild` | control plane's release check (a head without a release) or `workflow_dispatch` (base image change, bad release) | normal build and release; same `-lsN` when HEAD is the latest release for the same upstream version | dev build |
 | `manual` | `workflow_dispatch` default | normal build and release | dev build |
 | `pages` | `workflow_dispatch` or `repository_dispatch` (filling or repairing a site) | **deploy the Pages site only** (below) | the same: the site is the repository's, whatever the ref |
 | `pull_request` | derived: every pr-mode build reports this whatever the input | n/a | pr build |

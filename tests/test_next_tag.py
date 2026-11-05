@@ -201,3 +201,54 @@ def test_branch_listing_failure_falls_back_to_release_tags(monkeypatch, capsys):
     monkeypatch.setattr(next_tag, "gh", lambda *a: None)
     assert next_tag.live_sibling_tags("o/r", "master") == []
     assert "could not list branches" in capsys.readouterr().err
+
+
+def _rel(tag: str, published: str) -> dict:
+    return {"tag_name": tag, "target_commitish": "main", "html_url": f"https://x/{tag}", "published_at": published}
+
+
+def test_a_rebuild_republishes_only_for_the_same_upstream_version():
+    rels = [_rel("1.2.0-ls6", "2026-01-01T00:00:00Z")]
+    same = next_tag.pick(rels, "latest", "main", head_tags=["1.2.0-ls6"], upstream="1.2.0")
+    assert same["ls_build"] == 6 and same["head_already_released"] is True
+    other = next_tag.pick(rels, "latest", "main", head_tags=["1.2.0-ls6"], upstream="1.2.2")
+    assert other["ls_build"] == 7 and other["head_already_released"] is False
+    assert other["previous_tag"] == "1.2.0-ls6"
+
+
+def test_a_version_that_goes_back_is_a_new_release():
+    rels = [_rel("1.2.0-ls6", "2026-01-01T00:00:00Z"), _rel("1.2.2-ls6", "2026-01-03T00:00:00Z")]
+    head = ["1.2.0-ls6", "1.2.2-ls6"]
+    out = next_tag.pick(rels, "latest", "main", head_tags=head, upstream="1.2.0")
+    assert out["ls_build"] == 7 and out["head_already_released"] is False
+    assert out["previous_tag"] == "1.2.2-ls6"
+    again = next_tag.pick(
+        [*rels, _rel("1.2.0-ls7", "2026-01-04T00:00:00Z")],
+        "latest",
+        "main",
+        head_tags=[*head, "1.2.0-ls7"],
+        upstream="1.2.0",
+    )
+    assert again["ls_build"] == 7 and again["head_already_released"] is True
+
+
+def test_cli_passes_the_upstream_version(tmp_path, capsys):
+    fixture = tmp_path / "r.json"
+    fixture.write_text(json.dumps([_rel("1.2.0-ls6", "2026-01-01T00:00:00Z")]))
+    args = [
+        "--repo",
+        "o/r",
+        "--branch",
+        "main",
+        "--release-tag",
+        "latest",
+        "--releases-json",
+        str(fixture),
+        "--no-siblings",
+        "--head-tags",
+        "1.2.0-ls6",
+        "--upstream",
+        "1.2.2",
+    ]
+    assert next_tag.main(args) == 0
+    assert json.loads(capsys.readouterr().out)["ls_build"] == 7

@@ -13,6 +13,9 @@ inputs:
   other_tags:
     description: Comma separated tags published by the other live branches
     default: ""
+  upstream:
+    description: The resolved upstream version (upstream_clean); HEAD counts as released only through a tag of it
+    default: ""
   fresh:
     description: "true: a new build number even when HEAD is already released (a package check that found changes releases a new -lsN, never over the released tag)"
     default: "false"
@@ -41,7 +44,7 @@ runs:
         fresh=()
         [[ "${FRESH}" == "true" ]] && fresh=(--fresh)
         result=$(python3 "${GITHUB_ACTION_PATH}/../../../scripts/next_tag.py" \
-          --repo "${REPOSITORY}" --branch "${BRANCH}" --release-tag "${RELEASE_TAG}" --other-tags "${OTHER_TAGS}" "${fresh[@]}")
+          --repo "${REPOSITORY}" --branch "${BRANCH}" --release-tag "${RELEASE_TAG}" --other-tags "${OTHER_TAGS}" --upstream "${UPSTREAM}" "${fresh[@]}")
         echo "${result}"
         for key in ls_build previous_tag previous_ls_build previous_release_url head_already_released diff_base; do
           set_output "${key}" "$(jq -r --arg k "${key}" '.[$k] // ""' <<< "${result}")"
@@ -52,4 +55,5 @@ runs:
         RELEASE_TAG: ${{ inputs.release_tag }}
         OTHER_TAGS: ${{ inputs.other_tags }}
         FRESH: ${{ inputs.fresh }}
+        UPSTREAM: ${{ inputs.upstream }}
         GH_TOKEN: ${{ inputs.github_token }}

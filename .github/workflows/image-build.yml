@@ -179,6 +179,7 @@ jobs:
           branch: ${{ steps.manifest.outputs.release_branch }}
           release_tag: ${{ steps.manifest.outputs.release_tag }}
           other_tags: ${{ steps.manifest.outputs.other_tags }}
+          upstream: ${{ steps.version.outputs.upstream_clean }}
           # A package check that finds changes releases a new -lsN: HEAD is the released commit plus the table
           # commit of that release, which next-tag otherwise reads as already released (a rebuild republishes).
           fresh: ${{ inputs.reason == 'packages' }}
