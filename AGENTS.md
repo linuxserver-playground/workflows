@@ -18,7 +18,7 @@ bundle attached to each Release). The contract is `CONVENTIONS.md` in `linuxserv
 | `.github/workflows/mod-build.yml` | Reusable mod build for `docker-mods` branches. |
 | `.github/workflows/cleanup-staging.yml` | Scheduled deletion of old `build/*` staging images (needs `PACKAGES_TOKEN`). |
 | `.github/workflows/ci.yml` | This repo's own checks. |
-| `.github/actions/<name>/` | One composite action per step; logic in the script next to `action.yml`. `build-arch` pushes to `build/` staging refs, `publish-manifest` creates the released tags from them, `package-check` is the `reason: packages` comparison and commit. |
+| `.github/actions/<name>/` | One composite action per step; logic in the script next to `action.yml`. `build-arch` pushes to `build/` staging refs, `publish-manifest` creates the released tags from them, `package-check` is the `reason: packages` comparison and commit. `deploy-pages` is not a step of the build: the hub and the site deploy their Pages with it (`@v1`), so its inputs and outputs are an interface like the reusable workflows'. |
 | `scripts/` | `lib.sh` bash helpers; Python modules shared by actions and tests. |
 | `templates/build.yml`, `templates/pr-report.yml` | The caller files the builder renders into image repos. |
 | `fixtures/example-image/` | Minimal valid image repo for integration runs. |

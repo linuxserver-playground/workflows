@@ -1,0 +1,32 @@
+name: deploy-pages
+description: Deploy an artifact from actions/upload-pages-artifact to GitHub Pages under a build version unique to this deploy (scripts/deploy_pages.py). actions/deploy-pages names every deploy after the commit, and Pages answers a second deploy of the same commit with the first one's status while the site keeps the older deploy. The job needs pages and id-token write and the github-pages environment. For the hub and the site; image repositories deploy through the pages action.
+
+inputs:
+  artifact_id:
+    description: The artifact_id output of actions/upload-pages-artifact
+    required: true
+  attempt:
+    description: Which deploy of this run (1, 2, 3), so each has its own build version
+    default: "1"
+  github_token:
+    default: ${{ github.token }}
+
+outputs:
+  page_url:
+    description: The deployed site, empty when the deploy did not succeed
+    value: ${{ steps.deploy.outputs.page_url }}
+  status:
+    description: Pages' final status (succeed on success)
+    value: ${{ steps.deploy.outputs.status }}
+
+runs:
+  using: composite
+  steps:
+    - name: Deploy to Pages
+      id: deploy
+      shell: bash
+      run: python3 "${GITHUB_ACTION_PATH}/../../../scripts/deploy_pages.py" --artifact-id "${ARTIFACT_ID}" --attempt "${ATTEMPT}"
+      env:
+        ARTIFACT_ID: ${{ inputs.artifact_id }}
+        ATTEMPT: ${{ inputs.attempt }}
+        GITHUB_TOKEN: ${{ inputs.github_token }}

@@ -16,7 +16,7 @@ ACTIONS = sorted((ROOT / ".github" / "actions").glob("*/action.yml"))
 TEMPLATES = sorted((ROOT / "templates").glob("*.yml"))
 ALL_YAML = WORKFLOWS + ACTIONS + TEMPLATES
 
-EXPECTED_ACTIONS = {"free-disk", "manifest", "resolve-version", "next-tag", "build-arch", "test-arch", "publish-manifest", "emit-bundle", "record", "release", "notify-control", "package-check", "pages", "artifact-download", "artifact-upload"}
+EXPECTED_ACTIONS = {"free-disk", "manifest", "resolve-version", "next-tag", "build-arch", "test-arch", "publish-manifest", "emit-bundle", "record", "release", "notify-control", "package-check", "pages", "artifact-download", "artifact-upload", "deploy-pages"}
 CLOSED_PR = "github.event_name == 'pull_request' && github.event.action == 'closed'"
 NOT_PAGES = "inputs.reason != 'pages'"
 ALLOWED_REGISTRIES = re.compile(r"ghcr\.io/(linuxserver-playground/|linuxserver/baseimage-)")
@@ -58,7 +58,7 @@ def test_image_build_contract():
     assert publish["if"] == "${{ always() && " + NOT_PAGES + " && !(" + CLOSED_PR + ") }}"
     assert publish["permissions"] == {"contents": "write", "packages": "write", "pull-requests": "write", "id-token": "write", "attestations": "write", "pages": "write"}
     used = {s.get("uses", "") for job in wf["jobs"].values() for s in job["steps"]}
-    for a in EXPECTED_ACTIONS:
+    for a in EXPECTED_ACTIONS - {"deploy-pages"}:  # deploy-pages is the hub's and the site's, not a build step
         assert any(u.endswith(f"/.github/actions/{a}") for u in used), a
 
 
@@ -280,12 +280,16 @@ def test_pages_deploys_after_a_live_release_and_alone_for_reason_pages():
     for job in ("prepare", "arch", "publish"):
         assert NOT_PAGES in wf["jobs"][job]["if"], job
     action = load(ROOT / ".github" / "actions" / "pages" / "action.yml")
-    deploys = [s for s in action["runs"]["steps"] if str(s.get("uses", "")).startswith("actions/deploy-pages@")]
+    # Never actions/deploy-pages: it names every deploy after the commit, and Pages answers a redeploy of the same
+    # commit with the first one's status while the site keeps the older deploy (scripts/deploy_pages.py).
+    assert not [s for s in action["runs"]["steps"] if str(s.get("uses", "")).startswith("actions/deploy-pages@")]
+    deploys = [s for s in action["runs"]["steps"] if "deploy_pages.py" in str(s.get("run", ""))]
     uploads = [s for s in action["runs"]["steps"] if str(s.get("uses", "")).startswith("actions/upload-pages-artifact@")]
     assert len(deploys) == len(uploads) == 3
-    # Artifact names are unique within a run; each deploy takes the upload before it.
+    # Artifact names are unique within a run; each deploy takes the upload before it, as its own attempt.
     assert [u.get("with", {}).get("name", "github-pages") for u in uploads] == ["github-pages", "github-pages-2", "github-pages-3"]
-    assert [d.get("with", {}).get("artifact_name", "github-pages") for d in deploys] == ["github-pages", "github-pages-2", "github-pages-3"]
+    assert [d["env"]["ARTIFACT_ID"] for d in deploys] == [f"${{{{ steps.{u['id']}.outputs.artifact_id }}}}" for u in uploads]
+    assert [d["run"].split("--attempt ")[1] for d in deploys] == ["1", "2", "3"]
     assert all(s.get("continue-on-error") for s in action["runs"]["steps"] if s.get("id") != "result")
     tpl = load(ROOT / "templates" / "build.yml")
     assert tpl["jobs"]["build"]["permissions"]["pages"] == "write"
