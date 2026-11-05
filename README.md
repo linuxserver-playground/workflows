@@ -169,11 +169,7 @@ documents link the website at `SITE_URL` (the org variable; the `site_url` input
 already, as the Publish job does from `emit-bundle`) and assembles the site from the repository's Releases into an empty directory (`scripts/pages.py`:
 one GraphQL query for the branches and their `image.yml`, the release list, then the assets from their download
 URLs, which cost no REST quota), uploads it with `actions/upload-pages-artifact` and deploys it with
-`scripts/deploy_pages.py` (also the `deploy-pages` action, which the hub and the site use): the requests
-`actions/deploy-pages` sends, but under a build version of each deploy's own, `<sha>-<run id>-<run attempt>-<n>`.
-deploy-pages names every deploy after the commit, and Pages answers a second deploy of the same commit (a
-`reason=pages` run, a redeploy after the check below) with the first one's status while the site keeps the older
-deploy. A deploy replaces the whole site, and two branches of one repository that release together
+`actions/deploy-pages`. A deploy replaces the whole site, and two branches of one repository that release together
 can overlap without either being refused, so the one that assembled first and deployed last would remove the other's
 build. After every deploy `pages.py check` compares the site with the Releases (each live branch's newest, by tag and
 date) and, when one is missing, assembles and deploys again at once. The deploy that lands last checks after every
@@ -188,7 +184,7 @@ not retried.
   documents from this site, so they are deployed first. Since the step cannot fail the run, the event carries its
   outcome as `pages`: `deployed` (`page_url` set), `failed` (attempted, nothing deployed: control re-dispatches
   `reason: pages`) or `skipped` (no release). The deploy (about a minute, up to three more with the retries) is
-  the release path's only added wait. A Pages deploy wants a job in the `github-pages` environment, so the Publish job enters
+  the release path's only added wait. deploy-pages wants a job in the `github-pages` environment, so the Publish job enters
   it, but only on a run that can release (live, pushing): every other run gets an empty
   environment name, which is none, and leaves no deployment behind. A step, not a job: every job waits for one of
   the 20 runner slots on its own, and the release path takes no extra wait.
@@ -382,7 +378,7 @@ error, `<name> (retry)` runs when it failed), and the artifact uploads and downl
 `artifact-upload` and `artifact-download` composites, which try again after 20 s (the upload with `overwrite`).
 A second attempt costs seconds where control's self-healing re-run of the failed jobs costs a rebuild; control
 still re-runs once when the second attempt failed too. A cache that cannot be restored only warns, and
-setup-buildx, login, attest-build-provenance and upload-pages-artifact run as they are (a refused
+setup-buildx, login, attest-build-provenance, upload-pages-artifact and deploy-pages run as they are (a refused
 Pages deploy has the `pages` action's own retries, above).
 
 ## Known limits
@@ -418,6 +414,7 @@ All pinned by major tag, every one on the Node 24 runtime:
   `artifact-metadata: write` from every caller)
 - `actions/upload-pages-artifact@v5` (its default `github-pages` name and `-2`, `-3` for the retries: names are
   unique within a run)
+- `actions/deploy-pages@v5`
 - `docker/setup-buildx-action@v4`
 - `docker/login-action@v4`
 

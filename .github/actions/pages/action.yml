@@ -52,16 +52,10 @@ runs:
         retention-days: 1
       continue-on-error: true
 
-    # Not actions/deploy-pages: it names every deploy after the commit, and Pages answers a second deploy of the same
-    # commit (a reason=pages run, a redeploy below) with the first one's status while the site keeps the older deploy.
     - name: Deploy to Pages
       id: deploy
       if: steps.upload.outcome == 'success'
-      shell: bash
-      run: python3 "${GITHUB_ACTION_PATH}/../../../scripts/deploy_pages.py" --artifact-id "${ARTIFACT_ID}" --attempt 1
-      env:
-        ARTIFACT_ID: ${{ steps.upload.outputs.artifact_id }}
-        GITHUB_TOKEN: ${{ inputs.github_token }}
+      uses: actions/deploy-pages@v5
       continue-on-error: true
 
     # A deploy replaces the whole site. Another branch that released while this one assembled may have deployed first,
@@ -117,11 +111,9 @@ runs:
     - name: Deploy to Pages again
       id: deploy2
       if: steps.upload2.outcome == 'success'
-      shell: bash
-      run: python3 "${GITHUB_ACTION_PATH}/../../../scripts/deploy_pages.py" --artifact-id "${ARTIFACT_ID}" --attempt 2
-      env:
-        ARTIFACT_ID: ${{ steps.upload2.outputs.artifact_id }}
-        GITHUB_TOKEN: ${{ inputs.github_token }}
+      uses: actions/deploy-pages@v5
+      with:
+        artifact_name: github-pages-2
       continue-on-error: true
 
     - name: Check the site against the Releases again
@@ -174,11 +166,9 @@ runs:
     - name: Deploy to Pages a last time
       id: deploy3
       if: steps.upload3.outcome == 'success'
-      shell: bash
-      run: python3 "${GITHUB_ACTION_PATH}/../../../scripts/deploy_pages.py" --artifact-id "${ARTIFACT_ID}" --attempt 3
-      env:
-        ARTIFACT_ID: ${{ steps.upload3.outputs.artifact_id }}
-        GITHUB_TOKEN: ${{ inputs.github_token }}
+      uses: actions/deploy-pages@v5
+      with:
+        artifact_name: github-pages-3
       continue-on-error: true
 
     - name: Check the site against the Releases a last time
@@ -199,7 +189,7 @@ runs:
         set -euo pipefail
         # shellcheck source=../../../scripts/lib.sh
         source "${GITHUB_ACTION_PATH}/../../../scripts/lib.sh"
-        # A deploy counts only by its outcome. deploy-pages set page_url as soon as it created the deployment, so a
+        # A deploy counts only by its outcome. deploy-pages sets page_url as soon as it creates the deployment, so a
         # deploy that hung in updating_pages, timed out and was cancelled still has one (docker-kicad, 2026-11-04:
         # three such deploys reported "deployed", and control never redeployed the stale site).
         url=""
